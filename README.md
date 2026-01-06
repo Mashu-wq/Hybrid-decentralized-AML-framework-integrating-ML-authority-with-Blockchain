@@ -1,0 +1,1 @@
+# Infrastructure (Docker, Kafka, DB)

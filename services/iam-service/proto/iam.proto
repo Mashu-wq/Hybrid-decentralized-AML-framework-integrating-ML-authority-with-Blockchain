@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package iam;
+
+option go_package = "iam-service/proto;proto";
+
+service IAMService {
+  rpc ValidateToken(TokenRequest) returns (TokenResponse);
+}
+
+message TokenRequest {
+  string token = 1;
+}
+
+message TokenResponse {
+  bool valid = 1;
+  string role = 2;
+}

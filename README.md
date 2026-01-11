@@ -59,3 +59,40 @@ Login → Verify → Write audit_logs
 JWT → Stateless → No DB
 
 Refresh → refresh_tokens table
+
+### What is Middleware?
+Middleware is a gatekeeper function that runs:
+before protected APIs are executed.
+
+### It checks:
+- Is the request authenticated?
+- Is the JWT valid?
+- Does the user have permission?
+
+### Without middleware
+``` POST /admin/deleteUser ```
+Anyone can call it.
+
+### With middleware
+``` Request → Middleware → API Handler ```
+Middleware blocks unauthorized users before code execution.
+
+## What middleware.go does in my IAM service?
+
+Client Request
+     │
+     ▼
+AuthMiddleware()
+     │
+     ├─ Extract Bearer token
+     ├─ Verify JWT signature
+     ├─ Decode claims (role, id)
+     ├─ Inject identity into context
+     ▼
+Protected Handler runs
+
+### Real-life analogy
+- Middleware is like the security guard at bank gate.
+- No ID → No entry.
+
+

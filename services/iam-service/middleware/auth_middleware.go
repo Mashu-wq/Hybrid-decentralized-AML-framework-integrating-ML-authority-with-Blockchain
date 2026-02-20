@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var (
@@ -37,6 +38,7 @@ func NewAuthMiddleware(
 		permissionRepo: permissionRepo,
 	}
 }
+
 
 // Handler is the main authentication middleware
 func (am *AuthMiddleware) Handler() gin.HandlerFunc {
@@ -68,8 +70,9 @@ func (am *AuthMiddleware) Handler() gin.HandlerFunc {
 			return
 		}
 
-		userID, ok := claims["user_id"].(string)
-		if !ok || userID == "" {
+		// user_id claim comes from JWT as string
+		userIDStr, ok := claims["user_id"].(string)
+		if !ok || userIDStr == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":   "invalid_token",
 				"message": "Invalid token claims",
@@ -78,8 +81,19 @@ func (am *AuthMiddleware) Handler() gin.HandlerFunc {
 			return
 		}
 
+		// Convert string -> uuid.UUID (because repo now expects uuid.UUID)
+		userUUID, err := uuid.Parse(userIDStr)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":   "invalid_token",
+				"message": "Invalid user_id format in token",
+			})
+			c.Abort()
+			return
+		}
+
 		// Get user from database
-		user, err := am.userRepo.FindByID(userID)
+		user, err := am.userRepo.FindByID(userUUID)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":   "user_not_found",
@@ -99,8 +113,8 @@ func (am *AuthMiddleware) Handler() gin.HandlerFunc {
 			return
 		}
 
-		// Set user info in context
-		c.Set("user_id", user.ID)
+		// Store string IDs in context (easy to reuse everywhere)
+		c.Set("user_id", user.ID.String())
 		c.Set("user_email", user.Email)
 		c.Set("user_role", user.Role)
 		c.Set("user", user)
@@ -108,7 +122,6 @@ func (am *AuthMiddleware) Handler() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
 // RequirePermission middleware checks if user has specific permission
 func RequirePermission(permission string) gin.HandlerFunc {
 	return func(c *gin.Context) {

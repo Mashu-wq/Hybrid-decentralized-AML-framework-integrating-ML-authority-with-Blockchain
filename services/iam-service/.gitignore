@@ -1,0 +1,80 @@
+# =========================
+# 🔐 Environment Variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# 🐹 Go Build & Binaries
+# =========================
+bin/
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# =========================
+# 📦 Go Modules (KEEP go.mod & go.sum)
+# =========================
+vendor/
+
+# =========================
+# 🧪 Test & Coverage
+# =========================
+coverage.out
+*.cover
+*.coverprofile
+
+# =========================
+# 📝 Logs
+# =========================
+*.log
+logs/
+*.tmp
+
+# =========================
+# 🧠 IDE / Editor Files
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# =========================
+# 💻 OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# 🐳 Docker (optional ignores)
+# =========================
+docker-compose.override.yml
+
+# =========================
+# 📂 Temporary Files
+# =========================
+tmp/
+temp/
+.cache/
+
+# =========================
+# 🔄 Go Workspace
+# =========================
+go.work
+go.work.sum
+
+# =========================
+# 🔐 Security Sensitive (VERY IMPORTANT)
+# =========================
+*.pem
+*.key
+*.crt
+secrets/

@@ -28,16 +28,19 @@ func NewAuditRepository() AuditRepository {
 }
 
 func (r *auditRepository) Create(log *models.AuditLog) error {
+	 if log.Details == nil || len(log.Details) == 0 {
+        log.Details = json.RawMessage(`{}`)
+    }
 	query := `
 		INSERT INTO iam_schema.audit_logs 
 		(id, user_id, event_type, action, ip_address, user_agent, resource, resource_id, details, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 	
-	log.ID = uuid.New().String()
+	log.ID = uuid.New()
 	log.CreatedAt = time.Now()
 	
-	detailsJSON, _ := json.Marshal(log.Details)
+	//detailsJSON, _ := json.Marshal(log.Details)
 	
 	_, err := r.db.Exec(query,
 		log.ID,
@@ -48,7 +51,7 @@ func (r *auditRepository) Create(log *models.AuditLog) error {
 		log.UserAgent,
 		log.Resource,
 		log.ResourceID,
-		string(detailsJSON),
+		log.Details,
 		log.Status,
 		log.CreatedAt,
 	)

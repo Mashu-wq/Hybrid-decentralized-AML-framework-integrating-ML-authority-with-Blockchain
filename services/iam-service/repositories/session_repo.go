@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	//symaiya rahim session reposity interface modle session erro find by ser id upsate delete delete user y usre delted.
 )
 
 type SessionRepository interface {
@@ -36,7 +37,7 @@ func (r *sessionRepository) Create(session *models.Session) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
-	session.ID = uuid.New().String()
+	session.ID = uuid.New()
 	session.CreatedAt = time.Now()
 	session.LastActive = time.Now()
 

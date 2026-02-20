@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"time"
 
-	"iam-service/config"
 	"iam-service/repositories"
 	"iam-service/services"
 
@@ -13,26 +12,17 @@ import (
 	"github.com/google/uuid"
 )
 
-var (
-	authService services.AuthService
-	userRepo    repositories.UserRepository
-	auditRepo   repositories.AuditRepository
-)
+// AuthHandler holds all dependencies needed by auth-related HTTP handlers.
+type AuthHandler struct {
+	Auth     services.AuthService
+	UserRepo repositories.UserRepository
+}
 
-func init() {
-	cfg := config.Load()
-	userRepo = repositories.NewUserRepository()
-	sessionRepo := repositories.NewSessionRepository()
-	auditRepo = repositories.NewAuditRepository()
-	permissionRepo := repositories.NewPermissionRepository()
-
-	authService = services.NewAuthService(
-		userRepo,
-		sessionRepo,
-		auditRepo,
-		permissionRepo,
-		cfg,
-	)
+func NewAuthHandler(auth services.AuthService, userRepo repositories.UserRepository) *AuthHandler {
+	return &AuthHandler{
+		Auth:     auth,
+		UserRepo: userRepo,
+	}
 }
 
 type RegisterRequest struct {
@@ -42,7 +32,7 @@ type RegisterRequest struct {
 	LastName  string `json:"last_name" binding:"required"`
 }
 
-func Register(c *gin.Context) {
+func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -52,7 +42,7 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	user, err := authService.Register(req.Email, req.Password, req.FirstName, req.LastName)
+	user, err := h.Auth.Register(req.Email, req.Password, req.FirstName, req.LastName)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "registration_failed",
@@ -64,7 +54,7 @@ func Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Registration successful",
 		"user": gin.H{
-			"id":    user.ID,
+			"id":    user.ID.String(),
 			"email": user.Email,
 			"role":  user.Role,
 		},
@@ -76,7 +66,7 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-func Login(c *gin.Context) {
+func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -89,7 +79,7 @@ func Login(c *gin.Context) {
 	ip := c.ClientIP()
 	userAgent := c.GetHeader("User-Agent")
 
-	response, err := authService.Login(req.Email, req.Password, ip, userAgent)
+	response, err := h.Auth.Login(req.Email, req.Password, ip, userAgent)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "authentication_failed",
@@ -115,7 +105,7 @@ type VerifyMFARequest struct {
 	Code      string `json:"code" binding:"required,len=6"`
 }
 
-func VerifyMFA(c *gin.Context) {
+func (h *AuthHandler) VerifyMFA(c *gin.Context) {
 	var req VerifyMFARequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -125,25 +115,23 @@ func VerifyMFA(c *gin.Context) {
 		return
 	}
 
-	valid, err := authService.VerifyMFA(req.TempToken, req.Code)
-	if err != nil || !valid {
+	response, err := h.Auth.VerifyMFA(req.TempToken, req.Code)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "mfa_verification_failed",
-			"message": "Invalid MFA code",
+			"message": err.Error(),
 		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "MFA verification successful",
-	})
+	c.JSON(http.StatusOK, response)
 }
 
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
-func Refresh(c *gin.Context) {
+func (h *AuthHandler) Refresh(c *gin.Context) {
 	var req RefreshTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -153,7 +141,7 @@ func Refresh(c *gin.Context) {
 		return
 	}
 
-	response, err := authService.RefreshToken(req.RefreshToken)
+	response, err := h.Auth.RefreshToken(req.RefreshToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "token_refresh_failed",
@@ -165,8 +153,8 @@ func Refresh(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-func Logout(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) Logout(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
@@ -175,9 +163,18 @@ func Logout(c *gin.Context) {
 		return
 	}
 
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
 	sessionID := c.Query("session_id")
 
-	err := authService.Logout(userID.(string), sessionID)
+	err := h.Auth.Logout(userIDStr, sessionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "logout_failed",
@@ -195,7 +192,7 @@ type ForgotPasswordRequest struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
-func ForgotPassword(c *gin.Context) {
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	var req ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -205,7 +202,7 @@ func ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	err := authService.ForgotPassword(req.Email)
+	err := h.Auth.ForgotPassword(req.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "password_reset_failed",
@@ -224,7 +221,7 @@ type ResetPasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required,min=8"`
 }
 
-func ResetPassword(c *gin.Context) {
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	var req ResetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -234,7 +231,7 @@ func ResetPassword(c *gin.Context) {
 		return
 	}
 
-	err := authService.ResetPassword(req.Token, req.NewPassword)
+	err := h.Auth.ResetPassword(req.Token, req.NewPassword)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "password_reset_failed",
@@ -253,12 +250,21 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8"`
 }
 
-func ChangePassword(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
 			"message": "User not authenticated",
+		})
+		return
+	}
+
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
 		})
 		return
 	}
@@ -272,7 +278,7 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	err := authService.ChangePassword(userID.(string), req.CurrentPassword, req.NewPassword)
+	err := h.Auth.ChangePassword(userIDStr, req.CurrentPassword, req.NewPassword)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "password_change_failed",
@@ -286,8 +292,8 @@ func ChangePassword(c *gin.Context) {
 	})
 }
 
-func EnableMFA(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) EnableMFA(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
@@ -296,7 +302,16 @@ func EnableMFA(c *gin.Context) {
 		return
 	}
 
-	response, err := authService.EnableMFA(userID.(string))
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
+	response, err := h.Auth.EnableMFA(userIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "mfa_enable_failed",
@@ -312,12 +327,21 @@ type DisableMFARequest struct {
 	Code string `json:"code" binding:"required,len=6"`
 }
 
-func DisableMFA(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) DisableMFA(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
 			"message": "User not authenticated",
+		})
+		return
+	}
+
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
 		})
 		return
 	}
@@ -331,7 +355,7 @@ func DisableMFA(c *gin.Context) {
 		return
 	}
 
-	err := authService.DisableMFA(userID.(string), req.Code)
+	err := h.Auth.DisableMFA(userIDStr, req.Code)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "mfa_disable_failed",
@@ -345,8 +369,8 @@ func DisableMFA(c *gin.Context) {
 	})
 }
 
-func GetCurrentUser(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
@@ -355,7 +379,25 @@ func GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	user, err := userRepo.FindByID(userID.(string))
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_uuid",
+			"message": "Invalid user ID format",
+		})
+		return
+	}
+
+	user, err := h.UserRepo.FindByID(userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":   "user_not_found",
@@ -366,7 +408,7 @@ func GetCurrentUser(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":          user.ID,
+			"id":          user.ID.String(),
 			"email":       user.Email,
 			"role":        user.Role,
 			"mfa_enabled": user.MFAEnabled,
@@ -383,12 +425,30 @@ type UpdateUserRequest struct {
 	Role  string `json:"role" binding:"omitempty,oneof=admin investigator client"`
 }
 
-func UpdateUser(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) UpdateUser(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
 			"message": "User not authenticated",
+		})
+		return
+	}
+
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_uuid",
+			"message": "Invalid user ID format",
 		})
 		return
 	}
@@ -402,7 +462,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	user, err := userRepo.FindByID(userID.(string))
+	user, err := h.UserRepo.FindByID(userID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":   "user_not_found",
@@ -411,7 +471,6 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	// Update fields
 	if req.Email != "" {
 		user.Email = req.Email
 	}
@@ -419,7 +478,7 @@ func UpdateUser(c *gin.Context) {
 		user.Role = req.Role
 	}
 
-	if err := userRepo.Update(user); err != nil {
+	if err := h.UserRepo.Update(user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "update_failed",
 			"message": err.Error(),
@@ -430,15 +489,15 @@ func UpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "User updated successfully",
 		"user": gin.H{
-			"id":    user.ID,
+			"id":    user.ID.String(),
 			"email": user.Email,
 			"role":  user.Role,
 		},
 	})
 }
 
-func GetUserSessions(c *gin.Context) {
-	_, exists := c.Get("user_id")
+func (h *AuthHandler) GetUserSessions(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
@@ -447,11 +506,30 @@ func GetUserSessions(c *gin.Context) {
 		return
 	}
 
-	// Get sessions from repository
-	// For now, return mock data
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_uuid",
+			"message": "Invalid user ID format",
+		})
+		return
+	}
+
+	// TODO: Replace with real sessions from repository/store.
+	// For now, return mock data.
 	sessions := []gin.H{
 		{
 			"id":          uuid.New().String(),
+			"user_id":     userID.String(),
 			"created_at":  time.Now().Add(-2 * time.Hour),
 			"last_active": time.Now().Add(-5 * time.Minute),
 			"ip_address":  "192.168.1.100",
@@ -460,6 +538,7 @@ func GetUserSessions(c *gin.Context) {
 		},
 		{
 			"id":          uuid.New().String(),
+			"user_id":     userID.String(),
 			"created_at":  time.Now().Add(-24 * time.Hour),
 			"last_active": time.Now().Add(-2 * time.Hour),
 			"ip_address":  "203.0.113.1",
@@ -474,8 +553,8 @@ func GetUserSessions(c *gin.Context) {
 	})
 }
 
-func RevokeSession(c *gin.Context) {
-	userID, exists := c.Get("user_id")
+func (h *AuthHandler) RevokeSession(c *gin.Context) {
+	userIDVal, exists := c.Get("user_id")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthorized",
@@ -484,10 +563,19 @@ func RevokeSession(c *gin.Context) {
 		return
 	}
 
+	userIDStr, ok := userIDVal.(string)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_user_id",
+			"message": "Invalid user ID in context",
+		})
+		return
+	}
+
 	sessionID := c.Param("sessionId")
 
-	// In production, verify session belongs to user
-	_ = userID
+	// TODO: In production, verify session belongs to user and revoke from store/repo.
+	_ = userIDStr
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "Session revoked successfully",

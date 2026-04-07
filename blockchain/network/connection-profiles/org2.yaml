@@ -1,0 +1,21 @@
+name: fraud-detection-network-org2
+version: 1.0.0
+client:
+  organization: Org2
+organizations:
+  Org2:
+    mspid: Org2MSP
+    cryptoPath: ../crypto-config/peerOrganizations/org2.fraud-detection.example.com/users/{username}@org2.fraud-detection.example.com/msp
+    peers:
+      - peer0.org2.fraud-detection.example.com
+      - peer1.org2.fraud-detection.example.com
+channels:
+  kyc-channel:
+    peers:
+      peer0.org2.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}
+  alert-channel:
+    peers:
+      peer0.org2.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}
+  audit-channel:
+    peers:
+      peer0.org2.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}

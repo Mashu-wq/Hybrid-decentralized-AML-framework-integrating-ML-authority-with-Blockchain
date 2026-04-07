@@ -1,0 +1,302 @@
+syntax = "proto3";
+
+package fraud.ml.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/ml/v1;mlv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// ML SERVICE — Fraud prediction, model management, and explainability.
+// ML is the central intelligence authority for all fraud decisions.
+// Called by Transaction Service on every transaction in the hot path.
+// =============================================================================
+
+service FraudMLService {
+  // Biometric verification for KYC onboarding.
+  rpc VerifyFace         (VerifyFaceRequest)         returns (VerifyFaceResponse);
+
+  // Primary prediction RPC — called on every inbound transaction.
+  // Returns fraud probability + SHAP explanations.
+  rpc PredictFraud        (PredictFraudRequest)       returns (PredictFraudResponse);
+
+  // Batch prediction for historical data reprocessing.
+  rpc BatchPredictFraud   (BatchPredictFraudRequest)  returns (BatchPredictFraudResponse);
+
+  // Stream predictions (server-side streaming) for real-time dashboard.
+  rpc StreamPredictions   (StreamPredictionsRequest)  returns (stream PredictFraudResponse);
+
+  // Return LIME explanation for a specific prediction.
+  rpc GetLIMEExplanation  (GetLIMEExplanationRequest) returns (GetLIMEExplanationResponse);
+
+  // Return counterfactual: what features would need to change to avoid fraud.
+  rpc GetCounterfactual   (GetCounterfactualRequest)  returns (GetCounterfactualResponse);
+
+  // Model performance metrics (live).
+  rpc GetModelMetrics     (GetModelMetricsRequest)    returns (GetModelMetricsResponse);
+
+  // Comparison table across all models.
+  rpc GetModelComparison  (GetModelComparisonRequest) returns (GetModelComparisonResponse);
+
+  // A/B test: route prediction to a specific model version.
+  rpc PredictWithModel    (PredictWithModelRequest)   returns (PredictFraudResponse);
+
+  // Trigger manual retraining (ADMIN only).
+  rpc TriggerRetraining   (TriggerRetrainingRequest)  returns (TriggerRetrainingResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// KYC biometric verification
+// ---------------------------------------------------------------------------
+
+message VerifyFaceRequest {
+  fraud.common.v1.RequestMetadata meta            = 1;
+  string                          selfie_s3_key   = 2;
+  string                          document_s3_key = 3;
+  bool                            check_liveness  = 4;
+}
+
+message VerifyFaceResponse {
+  bool   face_match       = 1;
+  double match_score      = 2;
+  bool   liveness_passed  = 3;
+  double liveness_score   = 4;
+  string failure_reason   = 5;
+  string model_version    = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Feature vector — ALL features used by ML models.
+// Transaction Service populates this from its feature extraction pipeline.
+// ---------------------------------------------------------------------------
+
+message TransactionFeatures {
+  // --- Identifiers (NOT used as model features, only for logging/tracing) ---
+  string tx_hash      = 1;
+  string customer_id  = 2;
+
+  // --- Temporal features ---
+  int32  tx_hour               = 10;  // 0–23
+  int32  day_of_week           = 11;  // 0=Monday … 6=Sunday
+  bool   is_weekend            = 12;
+  double time_since_last_tx_s  = 13;  // seconds since previous transaction
+  double tx_frequency_1h       = 14;  // transactions per hour (rolling)
+  double tx_frequency_24h      = 15;
+
+  // --- Amount / behavioral features ---
+  double amount                = 20;
+  string currency_code         = 21;
+  double amount_usd_equiv      = 22;   // normalized to USD
+  double avg_amount_7d         = 23;
+  double avg_amount_30d        = 24;
+  double std_amount_30d        = 25;
+  double amount_deviation_score = 26;  // (amount - avg_30d) / std_30d
+  double velocity_1h           = 27;   // total USD in last 1 hour
+  double velocity_24h          = 28;
+
+  // --- Geographic features ---
+  string country_code          = 30;
+  double geographic_risk_score = 31;   // pre-computed country risk (0–100)
+  bool   cross_border_flag     = 32;
+  bool   country_change_2h     = 33;   // true if different country vs 2h ago
+  double distance_km_from_last = 34;   // geographic distance from last tx
+
+  // --- Merchant / category features ---
+  string merchant_category     = 40;   // MCC code description
+  double merchant_risk_score   = 41;   // 0–100
+  bool   is_high_risk_merchant = 42;   // gambling, crypto, wire transfer
+
+  // --- KYC / customer profile features ---
+  double customer_risk_score   = 50;   // from KYC record
+  int32  kyc_risk_level        = 51;   // 1=LOW 2=MEDIUM 3=HIGH 4=CRITICAL
+  int32  days_since_kyc        = 52;
+  int32  total_tx_count_30d    = 53;
+
+  // --- Graph features (computed by GNN / NetworkX) ---
+  double pagerank              = 60;   // node importance in transaction graph
+  double clustering_coefficient = 61;
+  double betweenness_centrality = 62;
+  int32  louvain_community_id  = 63;
+  int32  hops_to_known_fraudster = 64; // -1 if not reachable within 5 hops
+  int32  direct_fraud_neighbors = 65;  // count of direct neighbors flagged as fraud
+
+  // --- Elliptic raw features (166 features from dataset) ---
+  // Stored as a flat map for flexibility; individual fields above are extracted
+  // for interpretability. The full 166-feature vector is used by tree models.
+  map<string, double> elliptic_features = 70;  // feature_1 … feature_166
+}
+
+// ---------------------------------------------------------------------------
+// Predict
+// ---------------------------------------------------------------------------
+
+message PredictFraudRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  TransactionFeatures             features = 2;
+  string                          model    = 3;  // "" = use ensemble (default)
+}
+
+message PredictFraudResponse {
+  // Core prediction
+  double  fraud_probability    = 1;   // 0.0–1.0 from ensemble
+  bool    is_fraud             = 2;   // fraud_probability > threshold
+  fraud.common.v1.RiskLevel risk_level = 3;
+
+  // Per-model probabilities (ensemble components)
+  map<string, double> model_probabilities = 4;  // "xgboost" → 0.91, etc.
+
+  // Explainability
+  repeated fraud.common.v1.SHAPContribution shap_values = 5;  // top-5
+  double  base_value           = 6;   // SHAP expected value (model baseline)
+
+  // Metadata
+  string  model_version        = 7;
+  string  prediction_id        = 8;   // UUID for this prediction (for LIME/CF lookup)
+  double  latency_ms           = 9;   // server-side prediction latency
+  google.protobuf.Timestamp predicted_at = 10;
+}
+
+// ---------------------------------------------------------------------------
+// Batch Predict
+// ---------------------------------------------------------------------------
+
+message BatchPredictFraudRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  repeated TransactionFeatures    features_list = 2;  // max 1000 per call
+  string                          model        = 3;
+}
+
+message BatchPredictFraudResponse {
+  repeated PredictFraudResponse predictions = 1;
+  double                        total_latency_ms = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+message StreamPredictionsRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  double                          min_fraud_prob = 2;  // only stream if prob ≥ threshold
+}
+
+// ---------------------------------------------------------------------------
+// Explainability
+// ---------------------------------------------------------------------------
+
+message GetLIMEExplanationRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          prediction_id = 2;  // from PredictFraudResponse
+  int32                           num_features  = 3;  // default 10
+}
+
+message LIMEFeatureWeight {
+  string feature_name = 1;
+  double weight       = 2;   // positive → increases fraud probability
+  string condition    = 3;   // e.g. "pagerank > 0.5"
+}
+
+message GetLIMEExplanationResponse {
+  string                     prediction_id    = 1;
+  repeated LIMEFeatureWeight feature_weights  = 2;
+  double                     local_accuracy   = 3;  // how well LIME fits locally
+  double                     intercept        = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Counterfactual
+// ---------------------------------------------------------------------------
+
+message GetCounterfactualRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          prediction_id = 2;
+  double                          target_prob   = 3;  // target fraud probability (e.g. 0.3)
+}
+
+message CounterfactualChange {
+  string feature_name    = 1;
+  double current_value   = 2;
+  double suggested_value = 3;
+  double delta           = 4;
+}
+
+message GetCounterfactualResponse {
+  string                        prediction_id  = 1;
+  repeated CounterfactualChange changes        = 2;
+  double                        resulting_prob = 3;
+  bool                          achievable     = 4;  // false if no counterfactual found
+}
+
+// ---------------------------------------------------------------------------
+// Model Metrics & Comparison
+// ---------------------------------------------------------------------------
+
+message GetModelMetricsRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  string                          model_name   = 2;  // "" = active ensemble
+  string                          period       = 3;  // "24h", "7d", "30d"
+}
+
+message ModelMetrics {
+  string model_name     = 1;
+  string model_version  = 2;
+  double precision      = 3;
+  double recall         = 4;
+  double f1_score       = 5;
+  double auc_roc        = 6;
+  double auc_pr         = 7;   // area under precision-recall curve
+  double accuracy       = 8;
+  int32  true_positives  = 9;
+  int32  false_positives = 10;
+  int32  true_negatives  = 11;
+  int32  false_negatives = 12;
+  int32  sample_count    = 13;
+  double avg_latency_ms  = 14;
+  double p95_latency_ms  = 15;
+  string period          = 16;
+  google.protobuf.Timestamp evaluated_at = 17;
+}
+
+message GetModelMetricsResponse { ModelMetrics metrics = 1; }
+
+message GetModelComparisonRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;
+}
+
+message GetModelComparisonResponse {
+  repeated ModelMetrics models        = 1;
+  string                active_model  = 2;   // currently deployed ensemble
+  // TODO: Thesis — populate this with actual Elliptic dataset benchmark results
+}
+
+// ---------------------------------------------------------------------------
+// A/B Test
+// ---------------------------------------------------------------------------
+
+message PredictWithModelRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  TransactionFeatures             features     = 2;
+  string                          model_name   = 3;  // "random_forest", "xgboost", "lightgbm", "gnn", "autoencoder", "ensemble"
+  string                          model_version = 4; // "" = latest
+}
+
+// ---------------------------------------------------------------------------
+// Retraining
+// ---------------------------------------------------------------------------
+
+message TriggerRetrainingRequest {
+  fraud.common.v1.RequestMetadata meta       = 1;
+  string                          model_name = 2;  // "" = all models
+  string                          reason     = 3;
+}
+
+message TriggerRetrainingResponse {
+  string job_id      = 1;   // MLflow run ID
+  string status      = 2;   // QUEUED, RUNNING
+  string message     = 3;
+}

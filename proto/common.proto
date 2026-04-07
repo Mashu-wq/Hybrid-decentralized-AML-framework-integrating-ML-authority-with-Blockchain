@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package fraud.common.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/common/v1;commonv1";
+option java_package = "com.frauddetection.proto.common.v1";
+
+import "google/protobuf/timestamp.proto";
+
+// =============================================================================
+// COMMON — Shared message types used across all services.
+// Every service imports this file. Keep additions backward-compatible.
+// =============================================================================
+
+// RequestMetadata is injected by the API Gateway / interceptors into every
+// gRPC call. Services forward it unchanged on downstream calls.
+message RequestMetadata {
+  string request_id  = 1;  // UUID v4 — unique per HTTP request
+  string trace_id    = 2;  // OpenTelemetry trace ID (128-bit hex)
+  string span_id     = 3;  // OpenTelemetry span ID (64-bit hex)
+  string caller_svc  = 4;  // name of the calling service, e.g. "transaction-service"
+  string user_id     = 5;  // JWT subject (empty for machine-to-machine calls)
+  string role        = 6;  // resolved RBAC role
+}
+
+// Pagination controls for list RPCs.
+message PageRequest {
+  int32  page_size   = 1;  // max items per page (default 20, max 100)
+  string page_token  = 2;  // opaque cursor returned by previous call
+}
+
+message PageResponse {
+  string next_page_token = 1;  // empty if no more pages
+  int32  total_count     = 2;  // total matching records (may be -1 if expensive)
+}
+
+// Standard error detail attached to gRPC status details.
+message ErrorDetail {
+  string code    = 1;  // machine-readable, e.g. "CUSTOMER_NOT_FOUND"
+  string message = 2;  // human-readable explanation
+  string field   = 3;  // field that caused the error (for validation failures)
+}
+
+// RiskLevel is used consistently across KYC, alerts, and ML predictions.
+enum RiskLevel {
+  RISK_LEVEL_UNSPECIFIED = 0;
+  RISK_LEVEL_LOW         = 1;
+  RISK_LEVEL_MEDIUM      = 2;
+  RISK_LEVEL_HIGH        = 3;
+  RISK_LEVEL_CRITICAL    = 4;
+}
+
+// AlertStatus lifecycle.
+enum AlertStatus {
+  ALERT_STATUS_UNSPECIFIED    = 0;
+  ALERT_STATUS_OPEN           = 1;
+  ALERT_STATUS_INVESTIGATING  = 2;
+  ALERT_STATUS_RESOLVED       = 3;
+  ALERT_STATUS_FALSE_POSITIVE = 4;
+  ALERT_STATUS_ESCALATED      = 5;
+}
+
+// KYCStatus lifecycle.
+enum KYCStatus {
+  KYC_STATUS_UNSPECIFIED = 0;
+  KYC_STATUS_PENDING     = 1;
+  KYC_STATUS_APPROVED    = 2;
+  KYC_STATUS_REJECTED    = 3;
+  KYC_STATUS_SUSPENDED   = 4;
+}
+
+// HealthStatus for service health-check RPCs.
+enum HealthStatus {
+  HEALTH_STATUS_UNKNOWN    = 0;
+  HEALTH_STATUS_SERVING    = 1;
+  HEALTH_STATUS_NOT_SERVING = 2;
+}
+
+message HealthCheckRequest  { string service = 1; }
+message HealthCheckResponse {
+  HealthStatus status  = 1;
+  string       details = 2;  // optional human-readable detail
+}
+
+// SHAPContribution holds one feature's SHAP contribution to a prediction.
+message SHAPContribution {
+  string feature_name  = 1;
+  double feature_value = 2;
+  double shap_value    = 3;    // signed: positive → pushes toward fraud
+  double abs_importance = 4;   // |shap_value| — for ranking
+}
+
+// Money holds an amount with currency (ISO 4217).
+message Money {
+  double amount        = 1;
+  string currency_code = 2;  // e.g. "USD", "EUR", "BTC"
+}
+
+// GeoLocation holds geographic coordinates.
+message GeoLocation {
+  double latitude     = 1;
+  double longitude    = 2;
+  string country_code = 3;  // ISO 3166-1 alpha-2
+  string city         = 4;
+}

@@ -1,0 +1,219 @@
+syntax = "proto3";
+
+package fraud.audit.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/audit/v1;auditv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// AUDIT SERVICE — Immutable audit trail via Hyperledger Fabric audit-channel.
+// Every significant action (investigator decision, model prediction, KYC change)
+// is recorded on-chain and mirrored to this service for fast querying.
+// =============================================================================
+
+service AuditService {
+  // Record an investigator action (case review, evidence upload, SAR filing).
+  rpc RecordInvestigatorAction (RecordInvestigatorActionRequest) returns (RecordInvestigatorActionResponse);
+
+  // Record an ML model prediction on-chain (for reproducibility + compliance).
+  rpc RecordModelPrediction    (RecordModelPredictionRequest)   returns (RecordModelPredictionResponse);
+
+  // Record a system event (KYC status change, alert escalation, key rotation).
+  rpc RecordSystemEvent        (RecordSystemEventRequest)        returns (RecordSystemEventResponse);
+
+  // Retrieve full audit trail for an entity (customer, case, alert).
+  rpc GetAuditTrail            (GetAuditTrailRequest)            returns (GetAuditTrailResponse);
+
+  // Retrieve audit trail between two dates for compliance reporting.
+  rpc GetComplianceReport      (GetComplianceReportRequest)      returns (GetComplianceReportResponse);
+
+  // Verify that an audit record on the blockchain matches what we have locally.
+  rpc VerifyAuditRecord        (VerifyAuditRecordRequest)        returns (VerifyAuditRecordResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Record Investigator Action
+// ---------------------------------------------------------------------------
+
+message RecordInvestigatorActionRequest {
+  fraud.common.v1.RequestMetadata meta             = 1;
+  string                          investigator_id  = 2;
+  string                          case_id          = 3;
+  InvestigatorActionType          action           = 4;
+  string                          description      = 5;
+  repeated string                 evidence_refs    = 6;   // S3 keys of attached evidence
+  string                          notes            = 7;
+  map<string, string>             metadata         = 8;   // extensible key-value data
+}
+
+message RecordInvestigatorActionResponse {
+  string action_id         = 1;
+  string blockchain_tx_id  = 2;   // Fabric audit-channel TX ID
+  string block_number      = 3;
+  google.protobuf.Timestamp recorded_at = 4;
+}
+
+enum InvestigatorActionType {
+  INVESTIGATOR_ACTION_UNSPECIFIED     = 0;
+  INVESTIGATOR_ACTION_CASE_OPENED     = 1;
+  INVESTIGATOR_ACTION_CASE_REVIEWED   = 2;
+  INVESTIGATOR_ACTION_EVIDENCE_ADDED  = 3;
+  INVESTIGATOR_ACTION_SAR_INITIATED   = 4;
+  INVESTIGATOR_ACTION_SAR_FILED       = 5;
+  INVESTIGATOR_ACTION_CASE_CLOSED     = 6;
+  INVESTIGATOR_ACTION_FALSE_POSITIVE  = 7;
+  INVESTIGATOR_ACTION_ESCALATED       = 8;
+}
+
+// ---------------------------------------------------------------------------
+// Record Model Prediction (on-chain for compliance)
+// ---------------------------------------------------------------------------
+
+message RecordModelPredictionRequest {
+  fraud.common.v1.RequestMetadata meta              = 1;
+  string                          prediction_id     = 2;
+  string                          tx_hash           = 3;
+  string                          customer_id       = 4;
+  string                          model_name        = 5;
+  string                          model_version     = 6;
+  double                          fraud_probability = 7;
+  bool                            is_fraud          = 8;
+  // SHAP explanation serialized as JSON (top-5 features)
+  string                          shap_values_json  = 9;
+  // Feature vector hash (SHA-256 of serialized features) — not full vector (too large)
+  string                          features_hash     = 10;
+  double                          latency_ms        = 11;
+  google.protobuf.Timestamp       predicted_at      = 12;
+}
+
+message RecordModelPredictionResponse {
+  string prediction_record_id = 1;
+  string blockchain_tx_id     = 2;
+  string block_number         = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Record System Event
+// ---------------------------------------------------------------------------
+
+enum SystemEventType {
+  SYSTEM_EVENT_UNSPECIFIED        = 0;
+  SYSTEM_EVENT_KYC_STATUS_CHANGED = 1;
+  SYSTEM_EVENT_ALERT_CREATED      = 2;
+  SYSTEM_EVENT_ALERT_ESCALATED    = 3;
+  SYSTEM_EVENT_KEY_ROTATED        = 4;
+  SYSTEM_EVENT_USER_LOGIN         = 5;
+  SYSTEM_EVENT_USER_LOCKED        = 6;
+  SYSTEM_EVENT_MODEL_DEPLOYED     = 7;
+  SYSTEM_EVENT_MODEL_RETRAINED    = 8;
+  SYSTEM_EVENT_COMPLIANCE_REPORT  = 9;
+}
+
+message RecordSystemEventRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  SystemEventType                 event_type    = 2;
+  string                          entity_id     = 3;   // customer_id, alert_id, case_id, etc.
+  string                          entity_type   = 4;   // "customer", "alert", "case", "model"
+  string                          actor_id      = 5;   // user or service that triggered the event
+  string                          description   = 6;
+  map<string, string>             before_state  = 7;   // state before change (key-value)
+  map<string, string>             after_state   = 8;   // state after change
+}
+
+message RecordSystemEventResponse {
+  string event_id          = 1;
+  string blockchain_tx_id  = 2;
+  string block_number      = 3;
+  google.protobuf.Timestamp recorded_at = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+enum AuditEntityType {
+  AUDIT_ENTITY_UNSPECIFIED = 0;
+  AUDIT_ENTITY_CUSTOMER    = 1;
+  AUDIT_ENTITY_CASE        = 2;
+  AUDIT_ENTITY_ALERT       = 3;
+  AUDIT_ENTITY_MODEL       = 4;
+  AUDIT_ENTITY_USER        = 5;
+}
+
+message GetAuditTrailRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          entity_id   = 2;
+  AuditEntityType                 entity_type = 3;
+  fraud.common.v1.PageRequest     page        = 4;
+  google.protobuf.Timestamp       start_time  = 5;
+  google.protobuf.Timestamp       end_time    = 6;
+  bool                            on_chain_verified = 7;  // if true, verify each record on Fabric
+}
+
+message GetAuditTrailResponse {
+  repeated AuditRecord         records = 1;
+  fraud.common.v1.PageResponse page    = 2;
+  bool                         all_verified = 3;   // true if on_chain_verified and all match
+}
+
+message GetComplianceReportRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  google.protobuf.Timestamp       start_date   = 2;
+  google.protobuf.Timestamp       end_date     = 3;
+  string                          report_type  = 4;   // "SAR_SUMMARY", "FULL_AUDIT", "MODEL_ACCURACY"
+  string                          organization = 5;   // optional filter by org (for multi-org deployments)
+}
+
+message ComplianceReport {
+  string                    report_id        = 1;
+  string                    report_type      = 2;
+  google.protobuf.Timestamp period_start     = 3;
+  google.protobuf.Timestamp period_end       = 4;
+  int32                     total_events     = 5;
+  int32                     investigator_actions = 6;
+  int32                     model_predictions_recorded = 7;
+  int32                     sar_filed        = 8;
+  int32                     kyc_changes      = 9;
+  int32                     key_rotations    = 10;
+  repeated AuditRecord      sample_records   = 11;   // first 10 for preview
+  string                    download_url     = 12;   // S3 pre-signed URL for full CSV
+  google.protobuf.Timestamp generated_at     = 13;
+}
+
+message GetComplianceReportResponse { ComplianceReport report = 1; }
+
+message VerifyAuditRecordRequest {
+  fraud.common.v1.RequestMetadata meta             = 1;
+  string                          audit_record_id  = 2;
+  string                          blockchain_tx_id = 3;
+}
+
+message VerifyAuditRecordResponse {
+  bool   verified        = 1;   // true if DB record matches blockchain state
+  string mismatch_field  = 2;   // populated if mismatch detected
+  string blockchain_hash = 3;   // hash from Fabric
+  string local_hash      = 4;   // hash of local DB record
+}
+
+// ---------------------------------------------------------------------------
+// Domain objects
+// ---------------------------------------------------------------------------
+
+message AuditRecord {
+  string                    record_id        = 1;
+  string                    record_type      = 2;   // "INVESTIGATOR_ACTION", "MODEL_PREDICTION", "SYSTEM_EVENT"
+  string                    entity_id        = 3;
+  string                    entity_type      = 4;
+  string                    actor_id         = 5;
+  string                    description      = 6;
+  map<string, string>       data             = 7;   // event-specific key-value data
+  string                    blockchain_tx_id = 8;
+  string                    block_number     = 9;
+  bool                      on_chain         = 10;  // false if blockchain write pending
+  google.protobuf.Timestamp recorded_at      = 11;
+}

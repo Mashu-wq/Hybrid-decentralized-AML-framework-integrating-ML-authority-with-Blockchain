@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package fraud.transaction.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/transaction/v1;transactionv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+import "fraud.proto";
+
+// =============================================================================
+// TRANSACTION SERVICE — Real-time ingestion, feature extraction, risk scoring.
+// Kafka → feature pipeline → ML Service → alert routing.
+// =============================================================================
+
+service TransactionService {
+  // Ingest a single transaction (REST → Kafka → pipeline).
+  rpc IngestTransaction    (IngestTransactionRequest)   returns (IngestTransactionResponse);
+
+  // Ingest batch (bulk import, backtesting).
+  rpc IngestBatch          (IngestBatchRequest)         returns (IngestBatchResponse);
+
+  // Retrieve enriched transaction with features and risk score.
+  rpc GetTransaction       (GetTransactionRequest)      returns (GetTransactionResponse);
+
+  // Get transactions for a customer, newest first.
+  rpc GetCustomerHistory   (GetCustomerHistoryRequest)  returns (GetCustomerHistoryResponse);
+
+  // Get current risk score for a customer (cached).
+  rpc GetRiskScore         (GetRiskScoreRequest)        returns (GetRiskScoreResponse);
+
+  // Get the feature vector for a transaction (used by analytics/debugging).
+  rpc GetFeatures          (GetFeaturesRequest)         returns (GetFeaturesResponse);
+
+  // Get velocity statistics for a customer.
+  rpc GetVelocityStats     (GetVelocityStatsRequest)    returns (GetVelocityStatsResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Ingest
+// ---------------------------------------------------------------------------
+
+message RawTransaction {
+  string tx_hash          = 1;   // unique transaction identifier
+  string customer_id      = 2;   // references kyc.records.id
+  double amount           = 3;
+  string currency_code    = 4;   // ISO 4217
+  string merchant_id      = 5;
+  string merchant_name    = 6;
+  string merchant_category = 7;  // MCC description
+  string country_code     = 8;   // transaction origin ISO 3166-1 alpha-2
+  string channel          = 9;   // CARD_PRESENT, CARD_NOT_PRESENT, WIRE, CRYPTO, ACH
+  string counterparty_id  = 10;  // beneficiary account / wallet address
+  string counterparty_country = 11;
+  fraud.common.v1.GeoLocation location = 12;
+  google.protobuf.Timestamp transaction_at = 13;  // when the transaction occurred
+  map<string, string> metadata = 14;  // extensible raw fields
+}
+
+message IngestTransactionRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  RawTransaction                  transaction = 2;
+  bool                            sync        = 3;  // if true, wait for ML prediction before returning
+}
+
+message IngestTransactionResponse {
+  string tx_hash             = 1;
+  string status              = 2;   // QUEUED, PROCESSING, SCORED
+  // Populated only when sync=true:
+  double fraud_probability   = 3;
+  fraud.common.v1.RiskLevel risk_level = 4;
+  bool   alert_created       = 5;
+  string alert_id            = 6;
+}
+
+message IngestBatchRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  repeated RawTransaction         transactions = 2;  // max 500 per call
+}
+
+message IngestBatchResponse {
+  int32           accepted = 1;
+  int32           rejected = 2;
+  repeated string rejected_tx_hashes = 3;
+  repeated string error_messages     = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+message GetTransactionRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          tx_hash = 2;
+}
+
+message GetTransactionResponse {
+  EnrichedTransaction transaction = 1;
+}
+
+message GetCustomerHistoryRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+  fraud.common.v1.PageRequest     page        = 3;
+  google.protobuf.Timestamp       start_time  = 4;  // optional filter
+  google.protobuf.Timestamp       end_time    = 5;
+  double                          min_fraud_prob = 6;  // optional: only return suspicious
+}
+
+message GetCustomerHistoryResponse {
+  repeated EnrichedTransaction     transactions = 1;
+  fraud.common.v1.PageResponse     page         = 2;
+}
+
+message GetRiskScoreRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+}
+
+message GetRiskScoreResponse {
+  string                    customer_id       = 1;
+  double                    current_risk_score = 2;  // 0–100
+  fraud.common.v1.RiskLevel risk_level        = 3;
+  double                    fraud_rate_30d    = 4;   // fraction of flagged txns in 30 days
+  int32                     alert_count_30d   = 5;
+  google.protobuf.Timestamp computed_at       = 6;
+}
+
+message GetFeaturesRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          tx_hash = 2;
+}
+
+message GetFeaturesResponse {
+  fraud.ml.v1.TransactionFeatures features       = 1;
+  google.protobuf.Timestamp       computed_at    = 2;
+  string                          pipeline_version = 3;
+}
+
+message GetVelocityStatsRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+}
+
+message GetVelocityStatsResponse {
+  string customer_id          = 1;
+  int32  tx_count_1h          = 2;
+  int32  tx_count_24h         = 3;
+  int32  tx_count_7d          = 4;
+  double total_amount_1h      = 5;
+  double total_amount_24h     = 6;
+  double total_amount_7d      = 7;
+  int32  distinct_countries_24h = 8;
+  int32  distinct_merchants_24h = 9;
+  bool   velocity_alert_1h    = 10;  // triggered if count_1h exceeds threshold
+  bool   velocity_alert_24h   = 11;
+}
+
+// ---------------------------------------------------------------------------
+// Domain objects
+// ---------------------------------------------------------------------------
+
+message EnrichedTransaction {
+  RawTransaction                  raw              = 1;
+  fraud.ml.v1.TransactionFeatures features         = 2;
+  double                          fraud_probability = 3;
+  fraud.common.v1.RiskLevel       risk_level        = 4;
+  string                          model_version     = 5;
+  repeated fraud.common.v1.SHAPContribution shap_values = 6;
+  bool                            alert_created     = 7;
+  string                          alert_id          = 8;
+  google.protobuf.Timestamp       processed_at      = 9;
+}

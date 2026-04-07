@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+package fraud.encryption.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/encryption/v1;encryptionv1";
+
+import "common.proto";
+
+// =============================================================================
+// ENCRYPTION SERVICE — HashiCorp Vault Transit Engine wrapper.
+// ALL services that handle PII must call this service before writing to any DB.
+// Never log or trace plaintext values — only ciphertext and key versions.
+// =============================================================================
+
+service EncryptionService {
+  // Encrypt arbitrary plaintext using the configured Transit key.
+  rpc EncryptPII      (EncryptPIIRequest)      returns (EncryptPIIResponse);
+
+  // Decrypt ciphertext back to plaintext.
+  // ONLY called when PII must be displayed to an authorized user.
+  rpc DecryptPII      (DecryptPIIRequest)       returns (DecryptPIIResponse);
+
+  // Batch encrypt multiple fields in one round-trip (e.g. full customer PII).
+  rpc BatchEncrypt    (BatchEncryptRequest)     returns (BatchEncryptResponse);
+
+  // Batch decrypt multiple fields.
+  rpc BatchDecrypt    (BatchDecryptRequest)     returns (BatchDecryptResponse);
+
+  // Re-encrypt ciphertext under a newer key version (called during rotation).
+  // The decrypted plaintext never leaves Vault.
+  rpc RewrapKey       (RewrapKeyRequest)        returns (RewrapKeyResponse);
+
+  // Generate a deterministic SHA-256 identity hash from PII fields.
+  // Used to store a consistent reference on the blockchain without exposing PII.
+  rpc GenerateIdentityHash (GenerateIdentityHashRequest) returns (GenerateIdentityHashResponse);
+
+  // Returns current key version and rotation schedule.
+  rpc GetKeyInfo      (GetKeyInfoRequest)       returns (GetKeyInfoResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Encrypt
+// ---------------------------------------------------------------------------
+
+message EncryptPIIRequest {
+  fraud.common.v1.RequestMetadata meta       = 1;
+  string                          key_name   = 2;  // e.g. "fraud-pii-key" — defaults to primary
+  bytes                           plaintext  = 3;  // raw bytes to encrypt
+  string                          context    = 4;  // optional: derived key context (customer_id)
+}
+
+message EncryptPIIResponse {
+  string ciphertext   = 1;  // Vault ciphertext format: "vault:v1:..."
+  int32  key_version  = 2;  // key version used for this encryption
+}
+
+// ---------------------------------------------------------------------------
+// Decrypt
+// ---------------------------------------------------------------------------
+
+message DecryptPIIRequest {
+  fraud.common.v1.RequestMetadata meta       = 1;
+  string                          key_name   = 2;
+  string                          ciphertext = 3;  // "vault:v1:..."
+  string                          context    = 4;  // must match context used during encrypt
+}
+
+message DecryptPIIResponse {
+  bytes  plaintext = 1;   // decrypted bytes — DO NOT LOG
+}
+
+// ---------------------------------------------------------------------------
+// Batch operations (reduce round-trips for multi-field PII)
+// ---------------------------------------------------------------------------
+
+message EncryptField {
+  string field_name = 1;  // logical name, e.g. "full_name", "dob", "ssn"
+  bytes  plaintext  = 2;
+  string context    = 3;  // per-field context (optional)
+}
+
+message BatchEncryptRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  string                          key_name = 2;
+  repeated EncryptField           fields   = 3;
+}
+
+message EncryptedField {
+  string field_name  = 1;
+  string ciphertext  = 2;
+  int32  key_version = 3;
+}
+
+message BatchEncryptResponse {
+  repeated EncryptedField fields = 1;
+}
+
+message DecryptField {
+  string field_name  = 1;
+  string ciphertext  = 2;
+  string context     = 3;
+}
+
+message BatchDecryptRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  string                          key_name = 2;
+  repeated DecryptField           fields   = 3;
+}
+
+message DecryptedField {
+  string field_name = 1;
+  bytes  plaintext  = 2;  // DO NOT LOG
+}
+
+message BatchDecryptResponse {
+  repeated DecryptedField fields = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Rewrap (key rotation)
+// ---------------------------------------------------------------------------
+
+message RewrapKeyRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          key_name    = 2;
+  repeated string                 ciphertexts = 3;  // current ciphertexts to re-wrap
+  string                          context     = 4;
+}
+
+message RewrapKeyResponse {
+  repeated string new_ciphertexts = 1;  // re-encrypted under latest key version
+  int32           new_key_version = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Identity hash
+// ---------------------------------------------------------------------------
+
+message GenerateIdentityHashRequest {
+  fraud.common.v1.RequestMetadata meta = 1;
+  // PII fields to hash — order is normalized server-side for determinism.
+  string full_name      = 2;
+  string date_of_birth  = 3;  // ISO 8601: YYYY-MM-DD
+  string document_number = 4;
+  string document_type  = 5;
+  string country_code   = 6;  // ISO 3166-1 alpha-2
+}
+
+message GenerateIdentityHashResponse {
+  string identity_hash = 1;  // hex-encoded SHA-256 — safe to store in plaintext & blockchain
+  string algorithm     = 2;  // always "SHA-256" — explicit for auditability
+}
+
+// ---------------------------------------------------------------------------
+// Key info
+// ---------------------------------------------------------------------------
+
+message GetKeyInfoRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  string                          key_name = 2;
+}
+
+message GetKeyInfoResponse {
+  string key_name           = 1;
+  int32  current_version    = 2;
+  int32  min_decrypt_version = 3;
+  string rotation_period    = 4;   // e.g. "2160h" (90 days)
+  bool   deletion_allowed   = 5;
+}

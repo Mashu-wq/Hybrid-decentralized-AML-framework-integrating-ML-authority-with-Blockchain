@@ -1,0 +1,797 @@
+// Package service contains the KYC business logic layer.
+// All PII encryption/decryption is delegated to the EncryptionClient.
+// PII values MUST NOT appear in any log output.
+package service
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/fraud-detection/kyc-service/internal/clients"
+	"github.com/fraud-detection/kyc-service/internal/config"
+	"github.com/fraud-detection/kyc-service/internal/domain"
+	"github.com/fraud-detection/kyc-service/internal/textract"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+)
+
+// ---------------------------------------------------------------------------
+// Repository interface
+// ---------------------------------------------------------------------------
+
+// PIIEncryptor defines the encryption capabilities required by KYCService.
+type PIIEncryptor interface {
+	BatchEncryptPII(ctx context.Context, customerID string, fields map[string][]byte) (map[string]string, error)
+	BatchDecryptPII(ctx context.Context, customerID string, ciphertexts map[string]string) (map[string][]byte, error)
+	GenerateIdentityHash(ctx context.Context, fullName, dob, docType, docNumber, countryCode string) (string, error)
+}
+
+// KYCEventPublisher defines the Kafka publishing behavior used by KYCService.
+type KYCEventPublisher interface {
+	PublishKYCEvent(ctx context.Context, event *domain.KYCEvent) error
+}
+
+// KYCRepository defines the persistence interface required by KYCService.
+// The postgres.KYCRepo satisfies this interface.
+type KYCRepository interface {
+	// Customer CRUD
+	CreateCustomer(ctx context.Context, customer *domain.Customer, pii *domain.EncryptedPII) error
+	GetCustomerByID(ctx context.Context, id string) (*domain.Customer, error)
+	GetCustomerByIdentityHash(ctx context.Context, hash string) (*domain.Customer, error)
+	UpdateCustomer(ctx context.Context, customer *domain.Customer) error
+	UpdateCustomerStatus(ctx context.Context, customerID string, status domain.KYCStatus, riskLevel domain.RiskLevel, reason, verifierID, blockchainTxID string) error
+	ListByStatus(ctx context.Context, status domain.KYCStatus, countryCode string, limit, offset int) ([]*domain.Customer, int, error)
+
+	// PII
+	GetEncryptedPII(ctx context.Context, customerID string) (*domain.EncryptedPII, error)
+
+	// Documents
+	CreateDocument(ctx context.Context, doc *domain.Document) error
+	GetDocument(ctx context.Context, docID string) (*domain.Document, error)
+	ListDocuments(ctx context.Context, customerID string) ([]*domain.Document, error)
+	UpdateDocument(ctx context.Context, doc *domain.Document) error
+
+	// Audit
+	LogAuditEvent(ctx context.Context, event *domain.AuditEvent) error
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+// KYCService implements the KYC business logic.
+type KYCService struct {
+	repo       KYCRepository
+	enc        PIIEncryptor
+	blockchain clients.BlockchainClient
+	faceMatch  clients.FaceMatchClient
+	ocr        textract.OCRClient
+	producer   KYCEventPublisher
+	log        zerolog.Logger
+	cfg        *config.Config
+}
+
+// NewKYCService constructs a KYCService with all dependencies injected.
+func NewKYCService(
+	repo KYCRepository,
+	enc PIIEncryptor,
+	blockchain clients.BlockchainClient,
+	faceMatch clients.FaceMatchClient,
+	ocr textract.OCRClient,
+	producer KYCEventPublisher,
+	log zerolog.Logger,
+	cfg *config.Config,
+) *KYCService {
+	return &KYCService{
+		repo:       repo,
+		enc:        enc,
+		blockchain: blockchain,
+		faceMatch:  faceMatch,
+		ocr:        ocr,
+		producer:   producer,
+		log:        log.With().Str("component", "kyc_service").Logger(),
+		cfg:        cfg,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RegisterCustomer
+// ---------------------------------------------------------------------------
+
+// RegisterCustomerInput carries the raw (pre-encryption) registration data.
+// DO NOT LOG any fields from this struct — all contain PII.
+type RegisterCustomerInput struct {
+	// PII — DO NOT LOG
+	FullName    string
+	DateOfBirth string
+	AddressLine1 string
+	AddressLine2 string
+	Email       string
+	PhoneNumber string
+	DocumentNumber string
+	ExpiryDate  string
+
+	// Document metadata
+	DocumentType   string
+	CountryOfIssue string
+
+	// Profile (non-PII)
+	Nationality           string
+	City                  string
+	CountryCode           string
+	PostalCode            string
+	Occupation            string
+	Employer              string
+	SourceOfFunds         string
+	ExpectedMonthlyVolume float64
+}
+
+// RegisterCustomer onboards a new customer into the KYC pipeline:
+//  1. Generates an identity hash (used for deduplication).
+//  2. Checks for an existing customer with the same identity hash.
+//  3. Batch-encrypts all PII fields via the Encryption Service.
+//  4. Persists the customer record and encrypted PII in a DB transaction.
+//  5. Publishes a KYC_REGISTERED event to Kafka.
+//  6. Asynchronously anchors the registration on the blockchain (non-fatal).
+func (s *KYCService) RegisterCustomer(ctx context.Context, in *RegisterCustomerInput) (*domain.Customer, error) {
+	// 1. Generate identity hash from PII (call encryption service).
+	identityHash, err := s.enc.GenerateIdentityHash(
+		ctx,
+		in.FullName, in.DateOfBirth, in.DocumentType, in.DocumentNumber, in.CountryCode,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("generate identity hash: %w", err)
+	}
+
+	// 2. Duplicate check.
+	existing, err := s.repo.GetCustomerByIdentityHash(ctx, identityHash)
+	if err != nil {
+		return nil, fmt.Errorf("check duplicate identity hash: %w", err)
+	}
+	if existing != nil {
+		s.log.Warn().
+			Str("identity_hash", identityHash).
+			Msg("duplicate KYC registration attempt")
+		return nil, domain.NewKYCError(domain.ErrCustomerAlreadyExists, "customer with this identity is already registered")
+	}
+
+	// 3. Batch-encrypt all PII fields.
+	// DO NOT LOG the plaintext values in the fields map.
+	piiFields := map[string][]byte{
+		"full_name":       []byte(in.FullName),
+		"date_of_birth":   []byte(in.DateOfBirth),
+		"address_line1":   []byte(in.AddressLine1),
+		"address_line2":   []byte(in.AddressLine2),
+		"email":           []byte(in.Email),
+		"phone_number":    []byte(in.PhoneNumber),
+		"document_number": []byte(in.DocumentNumber),
+		"expiry_date":     []byte(in.ExpiryDate),
+	}
+
+	customerID := uuid.New().String()
+
+	encrypted, err := s.enc.BatchEncryptPII(ctx, customerID, piiFields)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt PII: %w", err)
+	}
+
+	// 4. Build domain objects and persist.
+	customer := &domain.Customer{
+		ID:                    customerID,
+		IdentityHash:          identityHash,
+		KYCStatus:             domain.KYCStatusPending,
+		RiskLevel:             domain.RiskLevelUnspecified,
+		DocumentType:          in.DocumentType,
+		CountryOfIssue:        in.CountryOfIssue,
+		Nationality:           in.Nationality,
+		City:                  in.City,
+		CountryCode:           in.CountryCode,
+		PostalCode:            in.PostalCode,
+		Occupation:            in.Occupation,
+		Employer:              in.Employer,
+		SourceOfFunds:         in.SourceOfFunds,
+		ExpectedMonthlyVolume: in.ExpectedMonthlyVolume,
+	}
+
+	pii := &domain.EncryptedPII{
+		CustomerID:        customerID,
+		FullNameEnc:       encrypted["full_name"],
+		DateOfBirthEnc:    encrypted["date_of_birth"],
+		AddressLine1Enc:   encrypted["address_line1"],
+		AddressLine2Enc:   encrypted["address_line2"],
+		EmailEnc:          encrypted["email"],
+		PhoneNumberEnc:    encrypted["phone_number"],
+		DocumentNumberEnc: encrypted["document_number"],
+		ExpiryDateEnc:     encrypted["expiry_date"],
+	}
+
+	if err := s.repo.CreateCustomer(ctx, customer, pii); err != nil {
+		return nil, fmt.Errorf("create customer: %w", err)
+	}
+
+	s.log.Info().
+		Str("customer_id", customer.ID).
+		Str("identity_hash", identityHash).
+		Str("document_type", in.DocumentType).
+		Str("country_code", in.CountryCode).
+		Msg("customer registered")
+
+	// 5. Publish KYC_REGISTERED event to Kafka.
+	event := &domain.KYCEvent{
+		EventType:    "KYC_REGISTERED",
+		CustomerID:   customer.ID,
+		IdentityHash: identityHash,
+		KYCStatus:    customer.KYCStatus,
+		RiskLevel:    customer.RiskLevel,
+		CountryCode:  in.CountryCode,
+		DocumentType: in.DocumentType,
+		Timestamp:    time.Now().UTC(),
+	}
+	if err := s.producer.PublishKYCEvent(ctx, event); err != nil {
+		// Non-fatal — log and continue.
+		s.log.Error().Err(err).Str("customer_id", customer.ID).Msg("failed to publish KYC_REGISTERED event")
+	}
+
+	// 6. Async blockchain anchoring — non-fatal if the stub/service is unavailable.
+	go func() {
+		bcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		txID, err := s.blockchain.RegisterKYCOnChain(
+			bcCtx,
+			customer.ID, identityHash,
+			customer.KYCStatus, customer.RiskLevel,
+			"",
+		)
+		if err != nil {
+			s.log.Error().Err(err).Str("customer_id", customer.ID).Msg("blockchain registration failed (non-fatal)")
+			return
+		}
+		// Best-effort update with TX ID.
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer updateCancel()
+		customer.BlockchainTxID = txID
+		if err := s.repo.UpdateCustomer(updateCtx, customer); err != nil {
+			s.log.Error().Err(err).Str("customer_id", customer.ID).Msg("failed to persist blockchain TX ID (non-fatal)")
+		}
+	}()
+
+	return customer, nil
+}
+
+// ---------------------------------------------------------------------------
+// SubmitDocument
+// ---------------------------------------------------------------------------
+
+// SubmitDocumentInput carries the parameters for a document submission.
+type SubmitDocumentInput struct {
+	CustomerID   string
+	DocumentType string
+	S3Key        string
+	ContentType  string
+	IsFront      bool
+}
+
+// SubmitDocument processes a customer identity document image via OCR:
+//  1. Verifies the customer exists.
+//  2. Creates a document record in PROCESSING state.
+//  3. Calls the OCR client (with 30-second timeout).
+//  4. Updates the document with OCR results.
+//  5. Updates the customer's OCR confidence if extraction succeeded.
+//  6. Logs an audit event.
+func (s *KYCService) SubmitDocument(ctx context.Context, in *SubmitDocumentInput) (*domain.Document, error) {
+	// 1. Verify customer exists.
+	customer, err := s.repo.GetCustomerByID(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("get customer: %w", err)
+	}
+
+	// 2. Create document in PROCESSING state.
+	doc := &domain.Document{
+		ID:           uuid.New().String(),
+		CustomerID:   in.CustomerID,
+		DocumentType: in.DocumentType,
+		S3Key:        in.S3Key,
+		ContentType:  in.ContentType,
+		IsFront:      in.IsFront,
+		Status:       "PROCESSING",
+	}
+
+	if err := s.repo.CreateDocument(ctx, doc); err != nil {
+		return nil, fmt.Errorf("create document: %w", err)
+	}
+
+	s.log.Info().
+		Str("customer_id", in.CustomerID).
+		Str("document_id", doc.ID).
+		Str("document_type", in.DocumentType).
+		Msg("document submitted, starting OCR")
+
+	// 3. OCR with 30-second timeout.
+	ocrCtx, ocrCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer ocrCancel()
+
+	ocrResult, err := s.ocr.ExtractDocument(ocrCtx, in.S3Key, s.cfg.TextractBucket, in.DocumentType)
+	if err != nil {
+		// OCR failure — update document to FAILED, return partial result.
+		s.log.Error().Err(err).
+			Str("document_id", doc.ID).
+			Msg("OCR extraction failed")
+
+		doc.Status = "FAILED"
+		doc.OCRCompleted = true
+		doc.OCRResult = &domain.OCRResult{
+			Success:  false,
+			Warnings: []string{fmt.Sprintf("OCR failed: %v", err)},
+		}
+		if updateErr := s.repo.UpdateDocument(ctx, doc); updateErr != nil {
+			s.log.Error().Err(updateErr).Str("document_id", doc.ID).Msg("failed to update document status after OCR failure")
+		}
+		return doc, nil
+	}
+
+	if enrichErr := s.enrichOCRResult(ctx, in.CustomerID, ocrResult); enrichErr != nil {
+		s.log.Warn().
+			Err(enrichErr).
+			Str("customer_id", in.CustomerID).
+			Str("document_id", doc.ID).
+			Msg("failed to enrich OCR result with registered customer data")
+	}
+
+	// 4. Update document with OCR results.
+	doc.OCRCompleted = true
+	doc.OCRConfidence = ocrResult.Confidence
+	doc.OCRResult = ocrResult
+	doc.Status = "COMPLETED"
+
+	persistedDoc := *doc
+	persistedDoc.OCRResult = redactOCRResult(ocrResult)
+	if err := s.repo.UpdateDocument(ctx, &persistedDoc); err != nil {
+		return nil, fmt.Errorf("update document after OCR: %w", err)
+	}
+
+	// 5. Update customer OCR confidence if above threshold.
+	if ocrResult.Success && ocrResult.Confidence >= s.cfg.OCRConfidenceThreshold {
+		customer.OCRConfidence = ocrResult.Confidence
+		if err := s.repo.UpdateCustomer(ctx, customer); err != nil {
+			s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("failed to update customer OCR confidence (non-fatal)")
+		}
+	} else {
+		s.log.Warn().
+			Str("document_id", doc.ID).
+			Float64("confidence", ocrResult.Confidence).
+			Float64("threshold", s.cfg.OCRConfidenceThreshold).
+			Msg("OCR confidence below threshold")
+	}
+
+	// 6. Audit log.
+	s.logAudit(ctx, &domain.AuditEvent{
+		CustomerID: in.CustomerID,
+		EventType:  "DOCUMENT_SUBMITTED",
+		ActorID:    "",
+		Reason:     fmt.Sprintf("document type: %s, ocr_confidence: %.2f", in.DocumentType, ocrResult.Confidence),
+		Metadata: map[string]string{
+			"document_id":   doc.ID,
+			"document_type": in.DocumentType,
+			"ocr_success":   fmt.Sprintf("%t", ocrResult.Success),
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
+	s.log.Info().
+		Str("customer_id", in.CustomerID).
+		Str("document_id", doc.ID).
+		Float64("ocr_confidence", ocrResult.Confidence).
+		Bool("ocr_success", ocrResult.Success).
+		Msg("OCR completed")
+
+	return doc, nil
+}
+
+// ---------------------------------------------------------------------------
+// VerifyFace
+// ---------------------------------------------------------------------------
+
+// VerifyFaceInput carries the parameters for a face verification request.
+type VerifyFaceInput struct {
+	CustomerID    string
+	SelfieS3Key   string
+	DocumentS3Key string
+	CheckLiveness bool
+	ActorID       string
+}
+
+// VerifyFace performs biometric liveness and face-match verification:
+//  1. Verifies the customer exists and has completed OCR.
+//  2. Calls the FaceMatchClient.
+//  3. Updates the customer record with match score and liveness flag.
+//  4. Logs an audit event.
+func (s *KYCService) VerifyFace(ctx context.Context, in *VerifyFaceInput) (*domain.FaceVerifyResult, error) {
+	// 1. Verify customer exists.
+	customer, err := s.repo.GetCustomerByID(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("get customer: %w", err)
+	}
+
+	// Warn if OCR hasn't been completed yet (not a hard block).
+	if !customer.LivenessPassed && customer.OCRConfidence == 0 {
+		s.log.Warn().
+			Str("customer_id", in.CustomerID).
+			Msg("face verification requested before OCR completion")
+	}
+
+	// 2. Call face match client.
+	result, err := s.faceMatch.MatchFaces(ctx, in.SelfieS3Key, in.DocumentS3Key, in.CheckLiveness)
+	if err != nil {
+		return nil, fmt.Errorf("face match: %w", err)
+	}
+
+	// 3. Update customer.
+	customer.FaceMatchScore = result.MatchScore
+	customer.LivenessPassed = result.LivenessPassed
+	if err := s.repo.UpdateCustomer(ctx, customer); err != nil {
+		return nil, fmt.Errorf("update customer after face verify: %w", err)
+	}
+
+	// 4. Audit log.
+	s.logAudit(ctx, &domain.AuditEvent{
+		CustomerID: in.CustomerID,
+		EventType:  "FACE_VERIFIED",
+		ActorID:    in.ActorID,
+		Reason:     fmt.Sprintf("face_match=%t, liveness=%t", result.FaceMatch, result.LivenessPassed),
+		Metadata: map[string]string{
+			"match_score":    fmt.Sprintf("%.4f", result.MatchScore),
+			"liveness_score": fmt.Sprintf("%.4f", result.LivenessScore),
+			"model_version":  result.ModelVersion,
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
+	s.log.Info().
+		Str("customer_id", in.CustomerID).
+		Bool("face_match", result.FaceMatch).
+		Float64("match_score", result.MatchScore).
+		Bool("liveness_passed", result.LivenessPassed).
+		Msg("face verification completed")
+
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// UpdateKYCStatus
+// ---------------------------------------------------------------------------
+
+// UpdateKYCStatusInput carries the parameters for a KYC status change.
+type UpdateKYCStatusInput struct {
+	CustomerID string
+	Status     domain.KYCStatus
+	RiskLevel  domain.RiskLevel
+	VerifierID string
+	Reason     string
+}
+
+// UpdateKYCStatus validates a status transition, persists it, publishes a Kafka
+// event, and asynchronously anchors the update on the blockchain.
+func (s *KYCService) UpdateKYCStatus(ctx context.Context, in *UpdateKYCStatusInput) (*domain.Customer, error) {
+	customer, err := s.repo.GetCustomerByID(ctx, in.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("get customer: %w", err)
+	}
+
+	// Validate status transition.
+	if err := validateStatusTransition(customer.KYCStatus, in.Status); err != nil {
+		return nil, err
+	}
+
+	if err := s.repo.UpdateCustomerStatus(
+		ctx,
+		in.CustomerID,
+		in.Status,
+		in.RiskLevel,
+		in.Reason,
+		in.VerifierID,
+		"", // blockchain TX ID populated asynchronously
+	); err != nil {
+		return nil, fmt.Errorf("update customer status: %w", err)
+	}
+
+	customer.KYCStatus = in.Status
+	customer.RiskLevel = in.RiskLevel
+	customer.VerifierID = in.VerifierID
+	customer.RejectionReason = in.Reason
+
+	s.logAudit(ctx, &domain.AuditEvent{
+		CustomerID: in.CustomerID,
+		EventType:  "KYC_STATUS_UPDATED",
+		ActorID:    in.VerifierID,
+		Reason:     in.Reason,
+		Metadata: map[string]string{
+			"new_status":     string(in.Status),
+			"new_risk_level": string(in.RiskLevel),
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
+	// Publish event.
+	event := &domain.KYCEvent{
+		EventType:    "KYC_STATUS_UPDATED",
+		CustomerID:   in.CustomerID,
+		IdentityHash: customer.IdentityHash,
+		KYCStatus:    in.Status,
+		RiskLevel:    in.RiskLevel,
+		CountryCode:  customer.CountryCode,
+		DocumentType: customer.DocumentType,
+		Timestamp:    time.Now().UTC(),
+	}
+	if err := s.producer.PublishKYCEvent(ctx, event); err != nil {
+		s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("failed to publish KYC_STATUS_UPDATED event")
+	}
+
+	// Async blockchain update.
+	go func() {
+		bcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		txID, err := s.blockchain.UpdateKYCOnChain(bcCtx, in.CustomerID, in.Status, in.Reason, in.VerifierID)
+		if err != nil {
+			s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("blockchain update failed (non-fatal)")
+			return
+		}
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer updateCancel()
+		customer.BlockchainTxID = txID
+		if updateErr := s.repo.UpdateCustomer(updateCtx, customer); updateErr != nil {
+			s.log.Error().Err(updateErr).Str("customer_id", in.CustomerID).Msg("failed to persist blockchain TX ID after status update")
+		}
+	}()
+
+	s.log.Info().
+		Str("customer_id", in.CustomerID).
+		Str("new_status", string(in.Status)).
+		Str("risk_level", string(in.RiskLevel)).
+		Msg("KYC status updated")
+
+	return customer, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetKYCRecord
+// ---------------------------------------------------------------------------
+
+// GetKYCRecord returns the non-PII KYC record for a customer.
+func (s *KYCService) GetKYCRecord(ctx context.Context, customerID string) (*domain.Customer, error) {
+	customer, err := s.repo.GetCustomerByID(ctx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("get KYC record: %w", err)
+	}
+	return customer, nil
+}
+
+// ---------------------------------------------------------------------------
+// ListByStatus
+// ---------------------------------------------------------------------------
+
+// ListByStatus returns a paginated list of customers in the given KYC status.
+func (s *KYCService) ListByStatus(
+	ctx context.Context,
+	status domain.KYCStatus,
+	countryCode string,
+	limit, offset int,
+) ([]*domain.Customer, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	customers, total, err := s.repo.ListByStatus(ctx, status, countryCode, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list by status: %w", err)
+	}
+	return customers, total, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetDecryptedPII
+// ---------------------------------------------------------------------------
+
+// GetDecryptedPIIResult carries the decrypted PII values.
+// DO NOT LOG any fields in this struct.
+type GetDecryptedPIIResult struct {
+	CustomerID     string
+	FullName       string // DO NOT LOG
+	DateOfBirth    string // DO NOT LOG
+	AddressLine1   string // DO NOT LOG
+	AddressLine2   string // DO NOT LOG
+	Email          string // DO NOT LOG
+	PhoneNumber    string // DO NOT LOG
+	DocumentNumber string // DO NOT LOG
+	ExpiryDate     string // DO NOT LOG
+}
+
+// GetDecryptedPII decrypts and returns all PII fields for a customer.
+// Every call is audit-logged with the actor ID and reason.
+// NEVER log the returned struct or any of its fields.
+func (s *KYCService) GetDecryptedPII(ctx context.Context, customerID, actorID, reason string) (*GetDecryptedPIIResult, error) {
+	// Verify customer exists (returns non-PII record).
+	if _, err := s.repo.GetCustomerByID(ctx, customerID); err != nil {
+		return nil, fmt.Errorf("verify customer: %w", err)
+	}
+
+	// Fetch encrypted PII ciphertexts.
+	encPII, err := s.repo.GetEncryptedPII(ctx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("get encrypted PII: %w", err)
+	}
+
+	// Batch decrypt via Encryption Service.
+	ciphertexts := map[string]string{
+		"full_name":       encPII.FullNameEnc,
+		"date_of_birth":   encPII.DateOfBirthEnc,
+		"address_line1":   encPII.AddressLine1Enc,
+		"address_line2":   encPII.AddressLine2Enc,
+		"email":           encPII.EmailEnc,
+		"phone_number":    encPII.PhoneNumberEnc,
+		"document_number": encPII.DocumentNumberEnc,
+		"expiry_date":     encPII.ExpiryDateEnc,
+	}
+
+	decrypted, err := s.enc.BatchDecryptPII(ctx, customerID, ciphertexts)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt PII: %w", err)
+	}
+
+	// Audit log BEFORE returning (do not log PII values).
+	s.logAudit(ctx, &domain.AuditEvent{
+		CustomerID: customerID,
+		EventType:  "PII_ACCESSED",
+		ActorID:    actorID,
+		Reason:     reason,
+		Metadata: map[string]string{
+			"fields_accessed": "full_name,date_of_birth,address_line1,address_line2,email,phone_number,document_number,expiry_date",
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
+	s.log.Info().
+		Str("customer_id", customerID).
+		Str("actor_id", actorID).
+		Msg("PII accessed — audit event logged") // DO NOT LOG decrypted values
+
+	// Map decrypted bytes to strings. DO NOT LOG this struct.
+	result := &GetDecryptedPIIResult{
+		CustomerID:     customerID,
+		FullName:       string(decrypted["full_name"]),
+		DateOfBirth:    string(decrypted["date_of_birth"]),
+		AddressLine1:   string(decrypted["address_line1"]),
+		AddressLine2:   string(decrypted["address_line2"]),
+		Email:          string(decrypted["email"]),
+		PhoneNumber:    string(decrypted["phone_number"]),
+		DocumentNumber: string(decrypted["document_number"]),
+		ExpiryDate:     string(decrypted["expiry_date"]),
+	}
+
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetCustomerRiskLevel
+// ---------------------------------------------------------------------------
+
+// GetCustomerRiskLevel returns the current risk level and KYC status for a customer.
+func (s *KYCService) GetCustomerRiskLevel(ctx context.Context, customerID string) (*domain.Customer, error) {
+	customer, err := s.repo.GetCustomerByID(ctx, customerID)
+	if err != nil {
+		return nil, fmt.Errorf("get customer risk level: %w", err)
+	}
+	return customer, nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// validateStatusTransition enforces the KYC lifecycle state machine.
+// Valid transitions: PENDING → APPROVED/REJECTED, APPROVED → SUSPENDED, SUSPENDED → APPROVED.
+func (s *KYCService) enrichOCRResult(ctx context.Context, customerID string, ocrResult *domain.OCRResult) error {
+	if ocrResult == nil {
+		return nil
+	}
+
+	encPII, err := s.repo.GetEncryptedPII(ctx, customerID)
+	if err != nil {
+		return fmt.Errorf("get encrypted PII: %w", err)
+	}
+
+	decrypted, err := s.enc.BatchDecryptPII(ctx, customerID, map[string]string{
+		"full_name":       encPII.FullNameEnc,
+		"document_number": encPII.DocumentNumberEnc,
+		"expiry_date":     encPII.ExpiryDateEnc,
+	})
+	if err != nil {
+		return fmt.Errorf("decrypt PII for OCR enrichment: %w", err)
+	}
+
+	registeredName := normalizePIIString(string(decrypted["full_name"]))
+	extractedName := normalizePIIString(ocrResult.ExtractedName)
+	if registeredName != "" && extractedName != "" {
+		ocrResult.NameMatch = registeredName == extractedName
+		if !ocrResult.NameMatch {
+			ocrResult.Warnings = append(ocrResult.Warnings, "document name does not match registered customer profile")
+		}
+	}
+
+	registeredDocNo := normalizePIIString(string(decrypted["document_number"]))
+	extractedDocNo := normalizePIIString(ocrResult.ExtractedDocNo)
+	if registeredDocNo != "" && extractedDocNo != "" && registeredDocNo != extractedDocNo {
+		ocrResult.Warnings = append(ocrResult.Warnings, "document number does not match registered profile")
+	}
+
+	registeredExpiry := normalizePIIString(string(decrypted["expiry_date"]))
+	extractedExpiry := normalizePIIString(ocrResult.ExtractedExpiry)
+	if registeredExpiry != "" && extractedExpiry != "" && registeredExpiry != extractedExpiry {
+		ocrResult.Warnings = append(ocrResult.Warnings, "document expiry does not match registered profile")
+	}
+
+	return nil
+}
+
+func redactOCRResult(ocr *domain.OCRResult) *domain.OCRResult {
+	if ocr == nil {
+		return nil
+	}
+
+	return &domain.OCRResult{
+		Success:     ocr.Success,
+		Confidence:  ocr.Confidence,
+		ExpiryValid: ocr.ExpiryValid,
+		NameMatch:   ocr.NameMatch,
+		Warnings:    append([]string(nil), ocr.Warnings...),
+	}
+}
+
+func normalizePIIString(value string) string {
+	upper := strings.ToUpper(strings.TrimSpace(value))
+	upper = strings.ReplaceAll(upper, "-", "")
+	upper = strings.ReplaceAll(upper, "_", "")
+	upper = strings.ReplaceAll(upper, ",", "")
+	upper = strings.ReplaceAll(upper, ".", "")
+	return strings.Join(strings.Fields(upper), "")
+}
+
+func validateStatusTransition(from, to domain.KYCStatus) error {
+	allowed := map[domain.KYCStatus][]domain.KYCStatus{
+		domain.KYCStatusPending:   {domain.KYCStatusApproved, domain.KYCStatusRejected},
+		domain.KYCStatusApproved:  {domain.KYCStatusSuspended, domain.KYCStatusRejected},
+		domain.KYCStatusSuspended: {domain.KYCStatusApproved, domain.KYCStatusRejected},
+		domain.KYCStatusRejected:  {domain.KYCStatusPending}, // allow re-submission
+	}
+
+	targets, ok := allowed[from]
+	if !ok {
+		return domain.NewKYCError(domain.ErrInvalidStatus,
+			fmt.Sprintf("unknown source status: %s", from))
+	}
+
+	for _, t := range targets {
+		if t == to {
+			return nil
+		}
+	}
+
+	return domain.NewKYCError(domain.ErrInvalidStatus,
+		fmt.Sprintf("cannot transition from %s to %s", from, to))
+}
+
+// logAudit fires a best-effort audit log entry. Failures are logged but not propagated.
+func (s *KYCService) logAudit(ctx context.Context, event *domain.AuditEvent) {
+	if err := s.repo.LogAuditEvent(ctx, event); err != nil {
+		s.log.Error().
+			Err(err).
+			Str("event_type", event.EventType).
+			Str("customer_id", event.CustomerID).
+			Msg("failed to log audit event")
+	}
+}

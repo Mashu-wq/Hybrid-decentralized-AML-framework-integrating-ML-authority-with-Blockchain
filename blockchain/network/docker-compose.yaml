@@ -1,0 +1,144 @@
+version: "3.8"
+
+services:
+  orderer0.fraud-detection.example.com:
+    image: hyperledger/fabric-orderer:2.5
+    container_name: orderer0.fraud-detection.example.com
+    environment:
+      - FABRIC_LOGGING_SPEC=INFO
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=7050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_TLS_ENABLED=true
+      - ORDERER_GENERAL_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_ADMIN_TLS_ENABLED=true
+      - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:7053
+    volumes:
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/msp:/var/hyperledger/orderer/msp
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/var/hyperledger/orderer/tls
+      - orderer0-data:/var/hyperledger/production/orderer
+    ports:
+      - "7050:7050"
+      - "7053:7053"
+
+  orderer1.fraud-detection.example.com:
+    image: hyperledger/fabric-orderer:2.5
+    container_name: orderer1.fraud-detection.example.com
+    environment:
+      - FABRIC_LOGGING_SPEC=INFO
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=8050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_TLS_ENABLED=true
+      - ORDERER_GENERAL_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_ADMIN_TLS_ENABLED=true
+      - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:8053
+    volumes:
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer1.fraud-detection.example.com/msp:/var/hyperledger/orderer/msp
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer1.fraud-detection.example.com/tls:/var/hyperledger/orderer/tls
+      - orderer1-data:/var/hyperledger/production/orderer
+    ports:
+      - "8050:8050"
+      - "8053:8053"
+
+  orderer2.fraud-detection.example.com:
+    image: hyperledger/fabric-orderer:2.5
+    container_name: orderer2.fraud-detection.example.com
+    environment:
+      - FABRIC_LOGGING_SPEC=INFO
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=9050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_TLS_ENABLED=true
+      - ORDERER_GENERAL_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_ADMIN_TLS_ENABLED=true
+      - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:9053
+    volumes:
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer2.fraud-detection.example.com/msp:/var/hyperledger/orderer/msp
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer2.fraud-detection.example.com/tls:/var/hyperledger/orderer/tls
+      - orderer2-data:/var/hyperledger/production/orderer
+    ports:
+      - "9050:9050"
+      - "9053:9053"
+
+  couchdb0:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["5984:5984"]
+  couchdb1:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["6984:5984"]
+  couchdb2:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["7984:5984"]
+  couchdb3:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["8984:5984"]
+  couchdb4:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["9984:5984"]
+  couchdb5:
+    image: couchdb:3.3
+    environment: [COUCHDB_USER=admin, COUCHDB_PASSWORD=adminpw]
+    ports: ["10984:5984"]
+
+  peer0.org1.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer0.org1
+    depends_on: [couchdb0]
+  peer1.org1.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer1.org1
+    depends_on: [couchdb1]
+  peer0.org2.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer0.org2
+    depends_on: [couchdb2]
+  peer1.org2.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer1.org2
+    depends_on: [couchdb3]
+  peer0.org3.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer0.org3
+    depends_on: [couchdb4]
+  peer1.org3.fraud-detection.example.com:
+    extends:
+      file: docker-compose.peers.yaml
+      service: peer1.org3
+    depends_on: [couchdb5]
+
+volumes:
+  orderer0-data: {}
+  orderer1-data: {}
+  orderer2-data: {}

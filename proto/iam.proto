@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+package fraud.iam.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/iam/v1;iamv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// IAM SERVICE — Identity & Access Management
+// Consumed by: API Gateway (JWT validation), all services (inter-service auth)
+// =============================================================================
+
+service IAMService {
+  // --- Public (no auth required) ---
+  rpc Register      (RegisterRequest)      returns (RegisterResponse);
+  rpc Login         (LoginRequest)         returns (LoginResponse);
+  rpc RefreshToken  (RefreshTokenRequest)  returns (RefreshTokenResponse);
+  rpc MFASetup      (MFASetupRequest)      returns (MFASetupResponse);
+  rpc MFAVerify     (MFAVerifyRequest)     returns (MFAVerifyResponse);
+
+  // --- Requires valid JWT ---
+  rpc Logout        (LogoutRequest)        returns (LogoutResponse);
+  rpc ChangePassword(ChangePasswordRequest)returns (ChangePasswordResponse);
+  rpc GetProfile    (GetProfileRequest)    returns (GetProfileResponse);
+
+  // --- Inter-service (machine-to-machine) ---
+  // Called by API Gateway on every inbound request to validate JWT and
+  // resolve permissions. Must be extremely fast (<2ms target).
+  rpc ValidateToken  (ValidateTokenRequest)   returns (ValidateTokenResponse);
+  rpc GetPermissions (GetPermissionsRequest)  returns (GetPermissionsResponse);
+
+  // --- Admin only ---
+  rpc ListUsers     (ListUsersRequest)     returns (ListUsersResponse);
+  rpc UpdateUser    (UpdateUserRequest)    returns (UpdateUserResponse);
+  rpc DeactivateUser(DeactivateUserRequest)returns (DeactivateUserResponse);
+
+  // --- Health ---
+  rpc HealthCheck   (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Request / Response messages
+// ---------------------------------------------------------------------------
+
+message RegisterRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  string                          email    = 2;
+  string                          password = 3;  // plaintext — hashed server-side
+  string                          role     = 4;  // only ADMIN can set non-default roles
+}
+
+message RegisterResponse {
+  string                       user_id    = 1;
+  string                       email      = 2;
+  string                       role       = 3;
+  google.protobuf.Timestamp    created_at = 4;
+}
+
+message LoginRequest {
+  fraud.common.v1.RequestMetadata meta       = 1;
+  string                          email      = 2;
+  string                          password   = 3;
+  string                          mfa_code   = 4;  // optional TOTP code
+  string                          device_id  = 5;  // for refresh token binding
+  string                          ip_address = 6;
+  string                          user_agent = 7;
+}
+
+message LoginResponse {
+  string                    access_token       = 1;  // JWT, 15-minute TTL
+  string                    refresh_token      = 2;  // opaque, 7-day TTL
+  int64                     access_expires_in  = 3;  // seconds
+  int64                     refresh_expires_in = 4;  // seconds
+  string                    token_type         = 5;  // always "Bearer"
+  bool                      mfa_required       = 6;  // if true, MFA code needed
+  string                    mfa_challenge_id   = 7;  // returned when mfa_required=true
+  UserProfile               user               = 8;
+}
+
+message RefreshTokenRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          refresh_token = 2;
+  string                          device_id     = 3;
+}
+
+message RefreshTokenResponse {
+  string access_token      = 1;
+  string refresh_token     = 2;  // rotated: old token is revoked
+  int64  access_expires_in = 3;
+}
+
+message MFASetupRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          user_id = 2;
+}
+
+message MFASetupResponse {
+  string secret       = 1;   // base32 TOTP secret (show once, then discard)
+  string qr_code_url  = 2;   // otpauth:// URL for QR code generation
+  repeated string backup_codes = 3;  // 8 one-time backup codes
+}
+
+message MFAVerifyRequest {
+  fraud.common.v1.RequestMetadata meta             = 1;
+  string                          user_id          = 2;
+  string                          totp_code        = 3;   // 6-digit TOTP or backup code
+  string                          mfa_challenge_id = 4;   // from LoginResponse
+}
+
+message MFAVerifyResponse {
+  string access_token       = 1;
+  string refresh_token      = 2;
+  int64  access_expires_in  = 3;
+  bool   mfa_enabled        = 4;  // true = MFA now active on account
+}
+
+message LogoutRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          refresh_token = 2;  // revoke this token
+  bool                            all_devices   = 3;  // if true, revoke all refresh tokens
+}
+message LogoutResponse { bool success = 1; }
+
+message ChangePasswordRequest {
+  fraud.common.v1.RequestMetadata meta             = 1;
+  string                          user_id          = 2;
+  string                          current_password = 3;
+  string                          new_password     = 4;
+}
+message ChangePasswordResponse { bool success = 1; }
+
+message GetProfileRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          user_id = 2;
+}
+message GetProfileResponse { UserProfile profile = 1; }
+
+// --- ValidateToken (called by API Gateway on every request) ---
+message ValidateTokenRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  string                          access_token = 2;
+}
+
+message ValidateTokenResponse {
+  bool                      valid      = 1;
+  string                    user_id    = 2;
+  string                    email      = 3;
+  string                    role       = 4;
+  repeated string           permissions = 5;   // resolved permission strings
+  google.protobuf.Timestamp expires_at = 6;
+  string                    error_code = 7;    // e.g. "TOKEN_EXPIRED", "TOKEN_INVALID"
+}
+
+message GetPermissionsRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          role    = 2;
+}
+message GetPermissionsResponse {
+  repeated Permission permissions = 1;
+}
+
+// --- Admin ---
+message ListUsersRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  fraud.common.v1.PageRequest     page        = 2;
+  string                          role_filter = 3;   // optional
+  bool                            active_only = 4;
+}
+message ListUsersResponse {
+  repeated UserProfile         users = 1;
+  fraud.common.v1.PageResponse page  = 2;
+}
+
+message UpdateUserRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          user_id = 2;
+  string                          role    = 3;   // optional
+  bool                            active  = 4;   // optional
+}
+message UpdateUserResponse { UserProfile user = 1; }
+
+message DeactivateUserRequest {
+  fraud.common.v1.RequestMetadata meta    = 1;
+  string                          user_id = 2;
+  string                          reason  = 3;
+}
+message DeactivateUserResponse { bool success = 1; }
+
+// ---------------------------------------------------------------------------
+// Shared domain objects
+// ---------------------------------------------------------------------------
+
+message UserProfile {
+  string                    id            = 1;
+  string                    email         = 2;
+  string                    role          = 3;
+  bool                      mfa_enabled   = 4;
+  bool                      active        = 5;
+  google.protobuf.Timestamp last_login_at = 6;
+  google.protobuf.Timestamp created_at    = 7;
+  google.protobuf.Timestamp updated_at    = 8;
+}
+
+message Permission {
+  string resource = 1;   // e.g. "alerts"
+  string action   = 2;   // e.g. "read", "write", "delete"
+}

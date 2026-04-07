@@ -1,0 +1,156 @@
+groups:
+  # ===========================================================================
+  # ML Model Performance Alerts
+  # ===========================================================================
+  - name: ml_model_performance
+    rules:
+      - alert: FraudDetectionLatencyHigh
+        expr: histogram_quantile(0.95, rate(fraud_prediction_duration_seconds_bucket[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "Fraud detection p95 latency > 100ms"
+          description: "ML service p95 prediction latency is {{ $value | humanizeDuration }}. Target: <100ms"
+          runbook: "https://docs.internal/runbooks/ml-latency"
+
+      - alert: ModelAccuracyDegraded
+        expr: fraud_model_accuracy_24h < 0.85
+        for: 10m
+        labels:
+          severity: critical
+          team: ml
+        annotations:
+          summary: "Fraud model accuracy dropped below 85%"
+          description: "Model {{ $labels.model_name }} accuracy is {{ $value | humanizePercentage }}. Investigate model drift."
+
+      - alert: MLServiceDown
+        expr: up{job="ml-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ML service is down"
+          description: "Fraud detection ML service has been down for > 1 minute."
+
+  # ===========================================================================
+  # Blockchain / Hyperledger Fabric Alerts
+  # ===========================================================================
+  - name: blockchain_health
+    rules:
+      - alert: BlockchainPeerUnavailable
+        expr: blockchain_peer_connected == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: blockchain
+        annotations:
+          summary: "Hyperledger Fabric peer is unreachable"
+          description: "Peer {{ $labels.peer_id }} in org {{ $labels.org }} is not connected."
+
+      - alert: BlockchainTxErrorRateHigh
+        expr: rate(blockchain_transaction_errors_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: blockchain
+        annotations:
+          summary: "Blockchain transaction error rate is high"
+          description: "Error rate: {{ $value | humanizePercentage }} on channel {{ $labels.channel }}"
+
+      - alert: BlockchainBlockHeightStalled
+        expr: increase(blockchain_block_height[10m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: blockchain
+        annotations:
+          summary: "Blockchain block height not increasing"
+          description: "No new blocks committed in the last 15 minutes on channel {{ $labels.channel }}"
+
+  # ===========================================================================
+  # Kafka Consumer Lag
+  # ===========================================================================
+  - name: kafka_consumer
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_group_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Kafka consumer lag is too high"
+          description: "Consumer group {{ $labels.group }} on topic {{ $labels.topic }} has lag {{ $value }}"
+
+      - alert: KafkaConsumerLagCritical
+        expr: kafka_consumer_group_lag > 100000
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Kafka consumer lag is critical — transactions may be delayed"
+          description: "Lag: {{ $value }} messages behind for {{ $labels.group }}/{{ $labels.topic }}"
+
+  # ===========================================================================
+  # Fraud Alert Volume Anomalies
+  # ===========================================================================
+  - name: fraud_alert_volume
+    rules:
+      - alert: FraudAlertSpike
+        expr: rate(fraud_alerts_created_total[5m]) > 100
+        for: 3m
+        labels:
+          severity: warning
+          team: fraud-ops
+        annotations:
+          summary: "Unusual spike in fraud alerts"
+          description: "Creating {{ $value }} alerts/second — possible attack or false positive storm."
+
+      - alert: CriticalAlertsUnassigned
+        expr: fraud_alerts_unassigned{priority="CRITICAL"} > 10
+        for: 15m
+        labels:
+          severity: critical
+          team: fraud-ops
+        annotations:
+          summary: "CRITICAL fraud alerts going uninvestigated"
+          description: "{{ $value }} CRITICAL alerts unassigned for > 15 minutes."
+
+  # ===========================================================================
+  # Infrastructure Health
+  # ===========================================================================
+  - name: infrastructure
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} at {{ $labels.instance }} is not responding."
+
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes / 1073741824) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.job }} using > 2GB RAM"
+          description: "Memory usage: {{ $value | humanize1024 }}B"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High HTTP 5xx error rate on {{ $labels.job }}"
+          description: "Error rate: {{ $value | humanizePercentage }}"

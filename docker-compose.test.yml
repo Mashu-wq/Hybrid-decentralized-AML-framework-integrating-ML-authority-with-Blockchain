@@ -1,0 +1,155 @@
+version: "3.9"
+
+# =============================================================================
+# FRAUD DETECTION SYSTEM — Test Environment
+# Lightweight, ephemeral containers for integration tests.
+# Uses Testcontainers in Go/Python, but this file runs a full test stack.
+# Usage: docker compose -f docker-compose.test.yml up --abort-on-container-exit
+# =============================================================================
+
+networks:
+  test-net:
+    driver: bridge
+
+services:
+  postgres-test:
+    image: postgres:15-alpine
+    container_name: fds-test-postgres
+    environment:
+      POSTGRES_DB: fraud_detection_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5433:5432"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d fraud_detection_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data  # ephemeral — no persistence
+
+  mongodb-test:
+    image: mongo:6.0
+    container_name: fds-test-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: test_user
+      MONGO_INITDB_ROOT_PASSWORD: test_password
+      MONGO_INITDB_DATABASE: fraud_detection_test
+    ports:
+      - "27018:27017"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    tmpfs:
+      - /data/db
+
+  redis-test:
+    image: redis:7-alpine
+    container_name: fds-test-redis
+    command: redis-server --requirepass test_password
+    ports:
+      - "6380:6379"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "test_password", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  zookeeper-test:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: fds-test-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka-test:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: fds-test-kafka
+    depends_on:
+      zookeeper-test:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper-test:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-test:29092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_MS: 60000  # 1 min for tests
+    ports:
+      - "9093:9093"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9093"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  vault-test:
+    image: hashicorp/vault:1.16
+    container_name: fds-test-vault
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: test-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8201:8200"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Integration test runner — exits when tests complete
+  test-runner:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/test-runner.Dockerfile
+    container_name: fds-test-runner
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      mongodb-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      kafka-test:
+        condition: service_healthy
+      vault-test:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres-test
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: fraud_detection_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      MONGO_URI: mongodb://test_user:test_password@mongodb-test:27017/fraud_detection_test
+      REDIS_HOST: redis-test
+      REDIS_PASSWORD: test_password
+      KAFKA_BROKERS: kafka-test:29092
+      VAULT_ADDR: http://vault-test:8200
+      VAULT_TOKEN: test-root-token
+      ENVIRONMENT: test
+    networks:
+      - test-net
+    command: ["make", "test-integration"]

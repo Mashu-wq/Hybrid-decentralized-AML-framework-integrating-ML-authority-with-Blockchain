@@ -1,0 +1,226 @@
+syntax = "proto3";
+
+package fraud.alert.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/alert/v1;alertv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// ALERT SERVICE — Fraud alert lifecycle, notifications, WebSocket streaming.
+// Consumes alerts.created Kafka topic; manages full alert lifecycle.
+// =============================================================================
+
+service AlertService {
+  // Create a new fraud alert (called internally from Transaction Service).
+  rpc CreateAlert       (CreateAlertRequest)       returns (CreateAlertResponse);
+
+  // Get a single alert by ID.
+  rpc GetAlert          (GetAlertRequest)           returns (GetAlertResponse);
+
+  // List alerts with flexible filters (paginated).
+  rpc ListAlerts        (ListAlertsRequest)         returns (ListAlertsResponse);
+
+  // Get all alerts for a specific customer.
+  rpc GetAlertsByCustomer (GetAlertsByCustomerRequest) returns (GetAlertsByCustomerResponse);
+
+  // Update alert status (INVESTIGATING, RESOLVED, FALSE_POSITIVE, ESCALATED).
+  rpc UpdateAlertStatus (UpdateAlertStatusRequest)  returns (UpdateAlertStatusResponse);
+
+  // Assign alert to an analyst.
+  rpc AssignAlert       (AssignAlertRequest)        returns (AssignAlertResponse);
+
+  // Escalate alert (auto-called after 15min for CRITICAL unassigned alerts).
+  rpc EscalateAlert     (EscalateAlertRequest)      returns (EscalateAlertResponse);
+
+  // Send notification for an alert (email, SMS, Slack, webhook).
+  rpc SendNotification  (SendNotificationRequest)   returns (SendNotificationResponse);
+
+  // Get alert statistics for analytics dashboard.
+  rpc GetAlertStats     (GetAlertStatsRequest)      returns (GetAlertStatsResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Create
+// ---------------------------------------------------------------------------
+
+message CreateAlertRequest {
+  fraud.common.v1.RequestMetadata meta              = 1;
+  string                          customer_id       = 2;
+  string                          tx_hash           = 3;
+  double                          fraud_probability = 4;
+  double                          risk_score        = 5;   // 0–100 normalized
+  string                          model_version     = 6;
+  // SHAP top-5 contributions serialized as JSON string (stored in JSONB)
+  string                          shap_explanation_json = 7;
+  // Feature snapshot at prediction time (for audit reproducibility)
+  string                          features_snapshot_json = 8;
+  fraud.common.v1.RiskLevel       risk_level        = 9;
+}
+
+message CreateAlertResponse {
+  string                    alert_id   = 1;
+  AlertPriority             priority   = 2;
+  bool                      duplicate  = 3;   // true if dedup hash matched
+  string                    case_id    = 4;   // auto-created for CRITICAL/HIGH
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+message GetAlertRequest {
+  fraud.common.v1.RequestMetadata meta     = 1;
+  string                          alert_id = 2;
+}
+message GetAlertResponse { AlertRecord alert = 1; }
+
+message ListAlertsRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  fraud.common.v1.PageRequest     page          = 2;
+  fraud.common.v1.AlertStatus     status_filter = 3;   // 0 = all
+  AlertPriority                   priority_filter = 4; // 0 = all
+  google.protobuf.Timestamp       start_time    = 5;
+  google.protobuf.Timestamp       end_time      = 6;
+  string                          assignee_id   = 7;   // optional
+  double                          min_fraud_prob = 8;
+  string                          sort_by       = 9;   // "created_at", "fraud_probability", "risk_score"
+  bool                            ascending     = 10;
+}
+message ListAlertsResponse {
+  repeated AlertRecord         alerts = 1;
+  fraud.common.v1.PageResponse page   = 2;
+}
+
+message GetAlertsByCustomerRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+  fraud.common.v1.PageRequest     page        = 3;
+  fraud.common.v1.AlertStatus     status_filter = 4;
+}
+message GetAlertsByCustomerResponse {
+  repeated AlertRecord         alerts = 1;
+  fraud.common.v1.PageResponse page   = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------
+
+message UpdateAlertStatusRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          alert_id      = 2;
+  fraud.common.v1.AlertStatus     new_status    = 3;
+  string                          updated_by    = 4;   // user ID of analyst/investigator
+  string                          notes         = 5;
+  bool                            create_case   = 6;   // create investigation case on status change
+}
+message UpdateAlertStatusResponse {
+  AlertRecord updated_alert    = 1;
+  string      blockchain_tx_id = 2;   // Fabric alert-channel TX
+  string      case_id          = 3;   // if create_case=true
+}
+
+message AssignAlertRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          alert_id    = 2;
+  string                          assignee_id = 3;
+  string                          assigned_by = 4;
+}
+message AssignAlertResponse { AlertRecord updated_alert = 1; }
+
+message EscalateAlertRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          alert_id    = 2;
+  string                          reason      = 3;   // "UNASSIGNED_15MIN", "MANUAL"
+  string                          escalated_by = 4;  // system or user ID
+}
+message EscalateAlertResponse { AlertRecord updated_alert = 1; }
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+enum NotificationChannel {
+  NOTIFICATION_CHANNEL_UNSPECIFIED = 0;
+  NOTIFICATION_CHANNEL_EMAIL       = 1;
+  NOTIFICATION_CHANNEL_SMS         = 2;
+  NOTIFICATION_CHANNEL_SLACK       = 3;
+  NOTIFICATION_CHANNEL_WEBHOOK     = 4;
+}
+
+message SendNotificationRequest {
+  fraud.common.v1.RequestMetadata meta      = 1;
+  string                          alert_id  = 2;
+  NotificationChannel             channel   = 3;
+  string                          recipient = 4;  // email, phone, webhook URL, Slack channel
+  string                          template  = 5;  // notification template name
+  map<string, string>             context   = 6;  // template variables
+}
+message SendNotificationResponse {
+  bool   success    = 1;
+  string message_id = 2;   // provider message ID (SendGrid, Twilio)
+  string error      = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+message GetAlertStatsRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;   // "24h", "7d", "30d"
+}
+
+message AlertStatistics {
+  int32  total_alerts        = 1;
+  int32  open_alerts         = 2;
+  int32  critical_alerts     = 3;
+  int32  high_alerts         = 4;
+  int32  medium_alerts       = 5;
+  int32  low_alerts          = 6;
+  int32  resolved_alerts     = 7;
+  int32  false_positives     = 8;
+  double avg_fraud_probability = 9;
+  double false_positive_rate = 10;
+  double avg_resolution_time_min = 11;
+  double escalation_rate     = 12;
+  string period              = 13;
+}
+message GetAlertStatsResponse { AlertStatistics stats = 1; }
+
+// ---------------------------------------------------------------------------
+// Domain objects
+// ---------------------------------------------------------------------------
+
+enum AlertPriority {
+  ALERT_PRIORITY_UNSPECIFIED = 0;
+  ALERT_PRIORITY_LOW         = 1;  // fraud_prob < 0.5
+  ALERT_PRIORITY_MEDIUM      = 2;  // 0.5 – 0.7
+  ALERT_PRIORITY_HIGH        = 3;  // 0.7 – 0.85
+  ALERT_PRIORITY_CRITICAL    = 4;  // > 0.85
+}
+
+message AlertRecord {
+  string                    alert_id           = 1;
+  string                    customer_id        = 2;
+  string                    tx_hash            = 3;
+  double                    fraud_probability  = 4;
+  double                    risk_score         = 5;
+  fraud.common.v1.AlertStatus status           = 6;
+  AlertPriority             priority           = 7;
+  string                    model_version      = 8;
+  string                    shap_explanation_json = 9;
+  string                    assignee_id        = 10;
+  google.protobuf.Timestamp assigned_at        = 11;
+  google.protobuf.Timestamp resolved_at        = 12;
+  string                    resolution_notes   = 13;
+  string                    blockchain_tx_id   = 14;
+  google.protobuf.Timestamp created_at         = 15;
+  google.protobuf.Timestamp updated_at         = 16;
+}

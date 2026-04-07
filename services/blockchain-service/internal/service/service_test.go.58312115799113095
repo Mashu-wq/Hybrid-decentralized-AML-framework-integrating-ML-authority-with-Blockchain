@@ -1,0 +1,53 @@
+package service
+
+import (
+	"context"
+	"testing"
+
+	appconfig "github.com/fraud-detection/blockchain-service/internal/config"
+	"github.com/fraud-detection/blockchain-service/internal/domain"
+	"github.com/stretchr/testify/require"
+)
+
+type mockGateway struct {
+	invokeFn func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error)
+	queryFn  func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error)
+}
+
+func (m *mockGateway) Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
+	return m.invokeFn(ctx, channelName, chaincodeName, function, args)
+}
+
+func (m *mockGateway) Query(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
+	return m.queryFn(ctx, channelName, chaincodeName, function, args)
+}
+
+func (m *mockGateway) StartEventListeners(ctx context.Context) error { return nil }
+func (m *mockGateway) Health(ctx context.Context) map[string]string  { return map[string]string{"kyc-channel": "connected"} }
+func (m *mockGateway) Close()                                        {}
+
+func TestRegisterKYC(t *testing.T) {
+	svc := New(appconfig.Config{
+		KYCChannel:   "kyc-channel",
+		KYCChaincode: "kyc-contract",
+	}, &mockGateway{
+		invokeFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
+			require.Equal(t, "kyc-channel", channelName)
+			require.Equal(t, "kyc-contract", chaincodeName)
+			require.Equal(t, "RegisterCustomer", function)
+			require.Len(t, args, 5)
+			return "tx-1", []byte(`{"customerID":"customer-1"}`), nil
+		},
+	})
+
+	resp, err := svc.RegisterKYC(context.Background(), domain.RegisterKYCRequest{
+		CustomerID:   "customer-1",
+		IdentityHash: "hash-1234567890abcdef",
+		KYCStatus:    "PENDING",
+		RiskLevel:    "LOW",
+		VerifierID:   "verifier-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tx-1", resp.TransactionID)
+	require.JSONEq(t, `{"customerID":"customer-1"}`, string(resp.Payload))
+}

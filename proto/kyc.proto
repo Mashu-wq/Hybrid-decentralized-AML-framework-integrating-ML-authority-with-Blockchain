@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package fraud.kyc.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/kyc/v1;kycv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// KYC SERVICE — Customer onboarding, document verification, face matching.
+// PII is NEVER stored in plaintext; all sensitive fields are encrypted via
+// the Encryption Service before any persistence.
+// =============================================================================
+
+service KYCService {
+  // Initiate customer onboarding (creates PENDING KYC record).
+  rpc RegisterCustomer   (RegisterCustomerRequest)   returns (RegisterCustomerResponse);
+
+  // Submit a document (passport, ID card, etc.) for OCR + verification.
+  rpc SubmitDocument     (SubmitDocumentRequest)     returns (SubmitDocumentResponse);
+
+  // Run face match between uploaded selfie and document photo.
+  rpc VerifyFace         (VerifyFaceRequest)         returns (VerifyFaceResponse);
+
+  // Manually update KYC status (analyst/investigator role required).
+  rpc UpdateKYCStatus    (UpdateKYCStatusRequest)    returns (UpdateKYCStatusResponse);
+
+  // Retrieve KYC record by customer ID.
+  rpc GetKYCRecord       (GetKYCRecordRequest)       returns (GetKYCRecordResponse);
+
+  // List all customers with a given KYC status (paginated).
+  rpc ListByStatus       (ListByStatusRequest)       returns (ListByStatusResponse);
+
+  // Retrieve decrypted PII for a customer (ANALYST+ role; audit-logged).
+  rpc GetDecryptedPII    (GetDecryptedPIIRequest)    returns (GetDecryptedPIIResponse);
+
+  // Internal: called by Transaction Service to get risk level for feature extraction.
+  rpc GetCustomerRiskLevel (GetCustomerRiskLevelRequest) returns (GetCustomerRiskLevelResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Register Customer
+// ---------------------------------------------------------------------------
+
+message RegisterCustomerRequest {
+  fraud.common.v1.RequestMetadata meta = 1;
+
+  // Personal Information — encrypted before storage, never logged
+  string full_name       = 2;   // TODO: encrypt
+  string date_of_birth   = 3;   // ISO 8601: YYYY-MM-DD — TODO: encrypt
+  string nationality     = 4;   // ISO 3166-1 alpha-2
+  string address_line1   = 5;   // TODO: encrypt
+  string address_line2   = 6;   // TODO: encrypt
+  string city            = 7;
+  string country_code    = 8;   // ISO 3166-1 alpha-2
+  string postal_code     = 9;
+  string email           = 10;  // TODO: encrypt
+  string phone_number    = 11;  // E.164 format — TODO: encrypt
+
+  // Document information
+  string document_type   = 12;  // PASSPORT, DRIVING_LICENSE, NATIONAL_ID
+  string document_number = 13;  // TODO: encrypt
+  string country_of_issue = 14; // ISO 3166-1 alpha-2
+  string expiry_date     = 15;  // YYYY-MM-DD
+
+  // Source of funds / AML screening fields
+  string occupation      = 16;
+  string employer        = 17;
+  string source_of_funds = 18;  // SALARY, BUSINESS, INVESTMENT, etc.
+  double expected_monthly_volume = 19;  // USD equivalent
+}
+
+message RegisterCustomerResponse {
+  string                    customer_id    = 1;  // UUID — safe to share
+  string                    identity_hash  = 2;  // SHA-256 of PII — stored on blockchain
+  fraud.common.v1.KYCStatus kyc_status     = 3;
+  google.protobuf.Timestamp created_at     = 4;
+  string                    next_step      = 5;  // e.g. "SUBMIT_DOCUMENT"
+}
+
+// ---------------------------------------------------------------------------
+// Document Submission
+// ---------------------------------------------------------------------------
+
+message SubmitDocumentRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          customer_id   = 2;
+  string                          document_type = 3;   // PASSPORT, DRIVING_LICENSE, NATIONAL_ID
+  string                          s3_key        = 4;   // pre-signed S3 key of uploaded file
+  string                          content_type  = 5;   // image/jpeg, image/png, application/pdf
+  bool                            is_front      = 6;   // true = front, false = back
+}
+
+message SubmitDocumentResponse {
+  string document_id     = 1;
+  bool   ocr_completed   = 2;
+  OCRResult ocr_result   = 3;   // populated if OCR ran synchronously
+  string status          = 4;   // PROCESSING, COMPLETED, FAILED
+}
+
+message OCRResult {
+  bool    success          = 1;
+  double  confidence       = 2;     // 0.0–1.0
+  string  extracted_name   = 3;
+  string  extracted_dob    = 4;
+  string  extracted_doc_no = 5;
+  string  extracted_expiry = 6;
+  bool    expiry_valid     = 7;     // document not expired
+  bool    name_match       = 8;     // matches registered name
+  repeated string warnings = 9;    // e.g. "LOW_RESOLUTION", "GLARE_DETECTED"
+}
+
+// ---------------------------------------------------------------------------
+// Face Verification
+// ---------------------------------------------------------------------------
+
+message VerifyFaceRequest {
+  fraud.common.v1.RequestMetadata meta            = 1;
+  string                          customer_id     = 2;
+  string                          selfie_s3_key   = 3;  // live selfie
+  string                          document_s3_key = 4;  // document photo (from OCR step)
+  bool                            check_liveness  = 5;  // run anti-spoofing check
+}
+
+message VerifyFaceResponse {
+  bool   face_match        = 1;
+  double match_score       = 2;   // 0.0–1.0 (threshold: 0.85)
+  bool   liveness_passed   = 3;
+  double liveness_score    = 4;
+  string failure_reason    = 5;   // e.g. "FACE_NOT_DETECTED", "LIVENESS_FAILED"
+  string model_version     = 6;   // e.g. "facenet-v2.1"
+}
+
+// ---------------------------------------------------------------------------
+// Status Update
+// ---------------------------------------------------------------------------
+
+message UpdateKYCStatusRequest {
+  fraud.common.v1.RequestMetadata meta         = 1;
+  string                          customer_id  = 2;
+  fraud.common.v1.KYCStatus       new_status   = 3;
+  fraud.common.v1.RiskLevel       risk_level   = 4;
+  string                          reason       = 5;   // required for REJECTED/SUSPENDED
+  string                          verifier_id  = 6;   // analyst user ID
+}
+
+message UpdateKYCStatusResponse {
+  KYCRecord updated_record   = 1;
+  string    blockchain_tx_id = 2;  // Fabric TX ID after ledger update
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+message GetKYCRecordRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+}
+message GetKYCRecordResponse { KYCRecord record = 1; }
+
+message ListByStatusRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  fraud.common.v1.KYCStatus       status      = 2;
+  fraud.common.v1.PageRequest     page        = 3;
+  string                          country_code = 4;   // optional filter
+}
+message ListByStatusResponse {
+  repeated KYCRecord           records = 1;
+  fraud.common.v1.PageResponse page    = 2;
+}
+
+message GetDecryptedPIIRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+  string                          reason      = 3;   // audit log: why PII is being accessed
+}
+message GetDecryptedPIIResponse {
+  CustomerPII pii          = 1;   // decrypted — DO NOT LOG OR CACHE
+  string      accessed_by  = 2;
+  google.protobuf.Timestamp accessed_at = 3;
+}
+
+message GetCustomerRiskLevelRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  string                          customer_id = 2;
+}
+message GetCustomerRiskLevelResponse {
+  fraud.common.v1.RiskLevel risk_level = 1;
+  fraud.common.v1.KYCStatus kyc_status = 2;
+  string                    country_code = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Domain objects
+// ---------------------------------------------------------------------------
+
+message KYCRecord {
+  string                    customer_id      = 1;
+  string                    identity_hash    = 2;
+  fraud.common.v1.KYCStatus kyc_status       = 3;
+  fraud.common.v1.RiskLevel risk_level       = 4;
+  string                    document_type    = 5;
+  string                    country_of_issue = 6;
+  bool                      liveness_passed  = 7;
+  double                    face_match_score = 8;
+  double                    ocr_confidence   = 9;
+  string                    verifier_id      = 10;
+  string                    rejection_reason = 11;
+  string                    blockchain_tx_id = 12;
+  google.protobuf.Timestamp reviewed_at      = 13;
+  google.protobuf.Timestamp created_at       = 14;
+  google.protobuf.Timestamp updated_at       = 15;
+}
+
+// CustomerPII contains decrypted fields — only returned on explicit GetDecryptedPII call.
+// NEVER include this in logs, traces, or Kafka events.
+message CustomerPII {
+  string full_name       = 1;
+  string date_of_birth   = 2;
+  string nationality     = 3;
+  string address_line1   = 4;
+  string address_line2   = 5;
+  string city            = 6;
+  string country_code    = 7;
+  string postal_code     = 8;
+  string email           = 9;
+  string phone_number    = 10;
+  string document_number = 11;
+  string expiry_date     = 12;
+}

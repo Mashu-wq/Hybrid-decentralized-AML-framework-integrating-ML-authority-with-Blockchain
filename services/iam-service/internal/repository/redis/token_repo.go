@@ -146,13 +146,14 @@ type LoginAttemptResult struct {
 }
 
 // RecordLoginAttempt increments the login attempt counter for an email.
-// The counter expires after windowDuration. Returns the current count.
+// Uses ExpireNX so the TTL is set only on the first attempt in a window —
+// subsequent attempts within that window never reset the clock.
 func (r *TokenRepo) RecordLoginAttempt(ctx context.Context, email string, windowDuration time.Duration) (int64, error) {
 	key := prefixRateLogin + email
 
 	pipe := r.client.Pipeline()
 	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, windowDuration) // only sets TTL if not already set (NX behaviour)
+	pipe.ExpireNX(ctx, key, windowDuration) // NX: only sets TTL when key is new
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("record login attempt: %w", err)

@@ -16,6 +16,9 @@ import (
 	"github.com/fraud-detection/shared/middleware"
 	"github.com/rs/zerolog"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 )
 
 // Server wraps the gRPC server and its dependencies.
@@ -51,12 +54,15 @@ func NewServer(authSvc *service.AuthService, tokenSvc *service.TokenService, log
 	}
 
 	// Public methods that skip JWT authentication.
-	// These match the full gRPC method path: /package.ServiceName/MethodName
+	// Full gRPC path format: /proto-package.ServiceName/MethodName
 	publicMethods := []string{
-		"/iam.v1.AuthService/Login",
-		"/iam.v1.AuthService/Register",
-		"/iam.v1.AuthService/VerifyMFA",
-		"/iam.v1.AuthService/RefreshTokens",
+		"/fraud.iam.v1.IAMService/Register",
+		"/fraud.iam.v1.IAMService/Login",
+		"/fraud.iam.v1.IAMService/MFAVerify",
+		"/fraud.iam.v1.IAMService/RefreshToken",
+		"/fraud.iam.v1.IAMService/HealthCheck",
+		"/grpc.health.v1.Health/Check",
+		"/grpc.health.v1.Health/Watch",
 	}
 
 	interceptorCfg := middleware.ServerInterceptorConfig{
@@ -76,6 +82,15 @@ func NewServer(authSvc *service.AuthService, tokenSvc *service.TokenService, log
 
 	// Register the IAMService gRPC handler.
 	iamv1.RegisterIAMServiceServer(s.grpcServer, NewAuthHandler(authSvc, tokenSvc, log))
+
+	// Standard gRPC health protocol — required by grpc_health_probe, Kubernetes, and load balancers.
+	healthSrv := health.NewServer()
+	healthpb.RegisterHealthServer(s.grpcServer, healthSrv)
+	healthSrv.SetServingStatus("fraud.iam.v1.IAMService", healthpb.HealthCheckResponse_SERVING)
+	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING) // overall server health
+
+	// Enable server reflection so tools like Postman and grpcurl can discover methods.
+	reflection.Register(s.grpcServer)
 
 	return s
 }

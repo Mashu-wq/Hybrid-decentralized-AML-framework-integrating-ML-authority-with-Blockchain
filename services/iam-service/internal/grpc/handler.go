@@ -4,11 +4,13 @@ package grpc
 
 import (
 	"context"
-	"time"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	commonv1 "github.com/fraud-detection/proto/gen/go/common/v1"
 	iamv1 "github.com/fraud-detection/proto/gen/go/iam/v1"
@@ -49,7 +51,7 @@ func (h *AuthHandler) Register(ctx context.Context, req *iamv1.RegisterRequest) 
 		UserId:    u.ID,
 		Email:     u.Email,
 		Role:      string(u.Role),
-		CreatedAt: u.CreatedAt,
+		CreatedAt: timestamppb.New(u.CreatedAt),
 	}, nil
 }
 
@@ -142,27 +144,31 @@ func (h *AuthHandler) MFAVerify(ctx context.Context, req *iamv1.MFAVerifyRequest
 }
 
 // Logout revokes the current session.
+// Re-parses the Authorization header to extract the real JTI so the specific
+// token is blocklisted rather than a dummy key.
 func (h *AuthHandler) Logout(ctx context.Context, req *iamv1.LogoutRequest) (*iamv1.LogoutResponse, error) {
-	// Extract user ID and JTI from context (set by auth interceptor after ValidateToken).
-	// For logout we need the JTI from the access token presented in the Authorization header.
-	// The token has already been validated by the auth interceptor at this point.
-	userID := ""
-	if req.Meta != nil {
-		userID = req.Meta.UserId
+	// Extract raw Bearer token from incoming gRPC metadata.
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "missing metadata")
 	}
-	if userID == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id required in request metadata")
+	authValues := md.Get("authorization")
+	if len(authValues) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "missing authorization header")
+	}
+	rawToken := authValues[0]
+	if strings.HasPrefix(strings.ToLower(rawToken), "bearer ") {
+		rawToken = rawToken[7:]
 	}
 
-	// Re-validate the access token to extract JTI for blocklisting.
-	// The auth interceptor has already validated it; we need to re-parse for JTI.
-	// In production this would be extracted from context rather than re-parsed.
-	// TODO: propagate JTI through context in auth interceptor (Phase 11 refinement)
+	// Re-parse to get JTI and real ExpiresAt. The auth interceptor already validated
+	// the token so this is purely a claims extraction step.
+	claims, err := h.tokenSvc.ValidateAccessToken(ctx, rawToken)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, "invalid token")
+	}
 
-	// JTI is not propagated through context yet (Phase 11 refinement).
-	// Use worst-case expiry (now + accessTTL) for the blocklist TTL.
-	worstCaseExpiry := time.Now().Add(h.tokenSvc.AccessTTL())
-	if err := h.authSvc.Logout(ctx, userID, "", worstCaseExpiry, req.AllDevices); err != nil {
+	if err := h.authSvc.Logout(ctx, claims.UserID, claims.JTI, claims.ExpiresAt, req.AllDevices); err != nil {
 		return nil, mapAuthError(err)
 	}
 
@@ -230,7 +236,7 @@ func (h *AuthHandler) ValidateToken(ctx context.Context, req *iamv1.ValidateToke
 		Email:       claims.Email,
 		Role:        string(claims.Role),
 		Permissions: perms,
-		ExpiresAt:   claims.ExpiresAt,
+		ExpiresAt:   timestamppb.New(claims.ExpiresAt),
 	}, nil
 }
 
@@ -339,11 +345,11 @@ func domainUserToProto(u *domain.User) *iamv1.UserProfile {
 		Role:       string(u.Role),
 		MfaEnabled: u.MFAEnabled,
 		Active:     u.Active,
-		CreatedAt:  u.CreatedAt,
-		UpdatedAt:  u.UpdatedAt,
+		CreatedAt:  timestamppb.New(u.CreatedAt),
+		UpdatedAt:  timestamppb.New(u.UpdatedAt),
 	}
 	if u.LastLoginAt != nil {
-		p.LastLoginAt = u.LastLoginAt
+		p.LastLoginAt = timestamppb.New(*u.LastLoginAt)
 	}
 	return p
 }

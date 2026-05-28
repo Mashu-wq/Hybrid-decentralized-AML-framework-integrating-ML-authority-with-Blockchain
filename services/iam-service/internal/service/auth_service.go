@@ -44,6 +44,9 @@ type UserRepository interface {
 	RevokeRefreshToken(ctx context.Context, tokenHash string) error
 	RevokeAllUserTokens(ctx context.Context, userID string) error
 
+	// MFA backup codes
+	UpdateBackupCodes(ctx context.Context, userID string, hashedCodes []string) error
+
 	// Permissions & audit
 	GetRolePermissions(ctx context.Context, roleName string) ([]domain.Permission, error)
 	LogAuditEvent(ctx context.Context, evt *domain.AuditEvent) error
@@ -278,10 +281,10 @@ func (s *AuthService) Login(ctx context.Context, email, password, mfaCode, devic
 			return &LoginResult{MFARequired: true, MFAChallengeID: challengeID}, nil
 		}
 
-		// Code provided — verify it
-		if !s.mfaSvc.Verify(u.MFASecret, mfaCode) {
+		// Code provided — verify TOTP, then fall back to backup codes
+		if err := s.verifyAndConsumeCode(ctx, u, mfaCode); err != nil {
 			s.logAudit(ctx, u.ID, domain.EventMFAFailed, ip, userAgent, nil)
-			return nil, domain.NewAuthError(domain.ErrMFAInvalid, "invalid MFA code")
+			return nil, err
 		}
 		s.logAudit(ctx, u.ID, domain.EventMFAVerified, ip, userAgent, nil)
 	}
@@ -379,6 +382,8 @@ func (s *AuthService) issueTokensAndFinishLogin(ctx context.Context, u *domain.U
 // -----------------------------------------------------------------------------
 
 // VerifyMFA completes a pending MFA challenge and issues tokens.
+// Accepts both TOTP codes and one-time backup codes; a used backup code is
+// removed from the stored list immediately.
 func (s *AuthService) VerifyMFA(ctx context.Context, challengeID, mfaCode string) (*LoginResult, error) {
 	challenge, err := s.mfaStore.GetMFAChallenge(ctx, challengeID)
 	if err != nil {
@@ -393,9 +398,9 @@ func (s *AuthService) VerifyMFA(ctx context.Context, challengeID, mfaCode string
 		return nil, fmt.Errorf("get user for mfa: %w", err)
 	}
 
-	if !s.mfaSvc.Verify(u.MFASecret, mfaCode) {
+	if err := s.verifyAndConsumeCode(ctx, u, mfaCode); err != nil {
 		s.logAudit(ctx, u.ID, domain.EventMFAFailed, challenge.IPAddress, challenge.UserAgent, nil)
-		return nil, domain.NewAuthError(domain.ErrMFAInvalid, "invalid MFA code")
+		return nil, err
 	}
 	s.logAudit(ctx, u.ID, domain.EventMFAVerified, challenge.IPAddress, challenge.UserAgent, nil)
 
@@ -678,6 +683,37 @@ func (s *AuthService) logAudit(ctx context.Context, userID string, eventType dom
 	if err := s.users.LogAuditEvent(ctx, evt); err != nil {
 		log.Ctx(ctx).Error().Err(err).Str("event_type", string(eventType)).Msg("failed to write audit event")
 	}
+}
+
+// verifyAndConsumeCode validates an MFA submission against TOTP first, then
+// backup codes. If a backup code matches it is consumed (removed from storage)
+// so it cannot be reused. Returns ErrMFAInvalid when neither path succeeds.
+func (s *AuthService) verifyAndConsumeCode(ctx context.Context, u *domain.User, code string) error {
+	// Fast path: standard TOTP (covers 99% of logins)
+	if s.mfaSvc.Verify(u.MFASecret, code) {
+		return nil
+	}
+
+	// Slow path: one-time backup codes (bcrypt comparison for each stored hash)
+	valid, matchIndex, err := s.mfaSvc.VerifyBackupCode(code, u.MFABackupCodes)
+	if err != nil {
+		return fmt.Errorf("verify backup code: %w", err)
+	}
+	if !valid {
+		return domain.NewAuthError(domain.ErrMFAInvalid, "invalid MFA code")
+	}
+
+	// Consume the matched code — build new slice without it
+	updated := make([]string, 0, len(u.MFABackupCodes)-1)
+	for i, c := range u.MFABackupCodes {
+		if i != matchIndex {
+			updated = append(updated, c)
+		}
+	}
+	if err := s.users.UpdateBackupCodes(ctx, u.ID, updated); err != nil {
+		return fmt.Errorf("consume backup code: %w", err)
+	}
+	return nil
 }
 
 // isValidEmail performs a simple structural check on email addresses.

@@ -97,6 +97,10 @@ func (m *mockUserRepo) RevokeAllUserTokens(ctx context.Context, userID string) e
 	return m.Called(ctx, userID).Error(0)
 }
 
+func (m *mockUserRepo) UpdateBackupCodes(ctx context.Context, userID string, hashedCodes []string) error {
+	return m.Called(ctx, userID, hashedCodes).Error(0)
+}
+
 func (m *mockUserRepo) GetRolePermissions(ctx context.Context, roleName string) ([]domain.Permission, error) {
 	args := m.Called(ctx, roleName)
 	if args.Get(0) == nil {
@@ -399,10 +403,11 @@ func TestLogin_MFARequired_WhenNoCodeProvided(t *testing.T) {
 }
 
 func TestLogin_RateLimitExceeded(t *testing.T) {
-	authSvc, _, _, rateLimiter, _ := buildServices(t)
+	authSvc, userRepo, _, rateLimiter, _ := buildServices(t)
 	ctx := context.Background()
 
 	rateLimiter.On("RecordLoginAttempt", ctx, "blocked@example.com", mock.AnythingOfType("time.Duration")).Return(int64(6), nil)
+	userRepo.On("LogAuditEvent", ctx, mock.AnythingOfType("*domain.AuditEvent")).Return(nil)
 
 	_, err := authSvc.Login(ctx, "blocked@example.com", "anything", "", "", "", "")
 

@@ -149,6 +149,21 @@ func (r *UserRepo) UpdateMFASecret(ctx context.Context, userID, secret string, b
 	return err
 }
 
+// UpdateBackupCodes replaces the stored MFA backup codes for a user.
+// Called after a backup code is consumed during MFA verification.
+func (r *UserRepo) UpdateBackupCodes(ctx context.Context, userID string, hashedCodes []string) error {
+	codesJSON, err := json.Marshal(hashedCodes)
+	if err != nil {
+		return fmt.Errorf("marshal backup codes: %w", err)
+	}
+	const q = `UPDATE iam.users SET mfa_backup_codes = $2, updated_at = NOW() WHERE id = $1`
+	_, err = r.db.Exec(ctx, q, userID, codesJSON)
+	if err != nil {
+		return fmt.Errorf("update backup codes for user %s: %w", userID, err)
+	}
+	return nil
+}
+
 // UpdatePassword replaces the password hash.
 func (r *UserRepo) UpdatePassword(ctx context.Context, userID, newHash string) error {
 	const q = `
@@ -367,12 +382,13 @@ func (r *UserRepo) scanUser(row pgxRowScanner) (*domain.User, error) {
 	var roleName string
 	var mfaSecret *string
 	var backupCodesJSON *[]byte
+	var lastLoginIP *string
 
 	err := row.Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &roleName,
 		&u.MFAEnabled, &mfaSecret, &backupCodesJSON,
 		&u.Active, &u.FailedAttempts, &u.LockedUntil,
-		&u.LastLoginAt, &u.LastLoginIP, &u.CreatedAt, &u.UpdatedAt,
+		&u.LastLoginAt, &lastLoginIP, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.NewAuthError(domain.ErrUserNotFound, "user not found")
@@ -384,6 +400,9 @@ func (r *UserRepo) scanUser(row pgxRowScanner) (*domain.User, error) {
 	u.Role = domain.Role(roleName)
 	if mfaSecret != nil {
 		u.MFASecret = *mfaSecret
+	}
+	if lastLoginIP != nil {
+		u.LastLoginIP = *lastLoginIP
 	}
 	if backupCodesJSON != nil {
 		if err := json.Unmarshal(*backupCodesJSON, &u.MFABackupCodes); err != nil {

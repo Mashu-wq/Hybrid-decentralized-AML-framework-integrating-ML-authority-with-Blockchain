@@ -126,7 +126,7 @@ func (h *Handler) AddEvidence(ctx context.Context, req *casev1.AddEvidenceReques
 		FileName:     req.FileName,
 		FileSize:     req.FileSize,
 		ContentType:  req.ContentType,
-		EvidenceType: domain.EvidenceType(req.EvidenceType.String()),
+		EvidenceType: protoEvidenceTypeToDomain(req.EvidenceType),
 		Notes:        req.Notes,
 	})
 	if err != nil {
@@ -321,6 +321,23 @@ func protoStatusToDomain(s casev1.CaseStatus) domain.CaseStatus {
 		return domain.CaseStatusEscalated
 	default:
 		return ""
+	}
+}
+
+func protoEvidenceTypeToDomain(t casev1.EvidenceType) domain.EvidenceType {
+	switch t {
+	case casev1.EvidenceType_EVIDENCE_TYPE_DOCUMENT:
+		return domain.EvidenceTypeDocument
+	case casev1.EvidenceType_EVIDENCE_TYPE_SCREENSHOT:
+		return domain.EvidenceTypeScreenshot
+	case casev1.EvidenceType_EVIDENCE_TYPE_TRANSACTION:
+		return domain.EvidenceTypeTransaction
+	case casev1.EvidenceType_EVIDENCE_TYPE_COMMUNICATION:
+		return domain.EvidenceTypeCommunication
+	case casev1.EvidenceType_EVIDENCE_TYPE_OTHER:
+		return domain.EvidenceTypeOther
+	default:
+		return domain.EvidenceTypeOther
 	}
 }
 

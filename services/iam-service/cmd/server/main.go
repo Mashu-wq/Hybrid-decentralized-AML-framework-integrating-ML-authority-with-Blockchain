@@ -13,6 +13,7 @@ import (
 
 	"github.com/fraud-detection/iam-service/internal/config"
 	iamgrpc "github.com/fraud-detection/iam-service/internal/grpc"
+	iamhttp "github.com/fraud-detection/iam-service/internal/http"
 	"github.com/fraud-detection/iam-service/internal/repository/postgres"
 	redisrepo "github.com/fraud-detection/iam-service/internal/repository/redis"
 	"github.com/fraud-detection/iam-service/internal/service"
@@ -150,18 +151,27 @@ func run() error {
 	grpcSrv := iamgrpc.NewServer(authSvc, tokenSvc, log)
 
 	// -------------------------------------------------------------------------
+	// HTTP server (REST endpoints for API Gateway proxy)
+	// -------------------------------------------------------------------------
+	httpSrv := iamhttp.New(authSvc, log, cfg.HTTPPort)
+
+	// -------------------------------------------------------------------------
 	// Signal handling & graceful shutdown
 	// -------------------------------------------------------------------------
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	srvErr := make(chan error, 1)
+	srvErr := make(chan error, 2)
 	go func() {
 		srvErr <- grpcSrv.Run(ctx, cfg.GRPCPort)
+	}()
+	go func() {
+		srvErr <- httpSrv.Run(ctx)
 	}()
 
 	log.Info().
 		Int("grpc_port", cfg.GRPCPort).
+		Int("http_port", cfg.HTTPPort).
 		Msg("IAM service ready")
 
 	select {

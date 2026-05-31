@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/fraud-detection/kyc-service/internal/domain"
 	"github.com/fraud-detection/kyc-service/internal/service"
@@ -67,21 +68,21 @@ func (h *KYCHandler) RegisterCustomer(ctx context.Context, req *kycv1.RegisterCu
 	}
 
 	return &kycv1.RegisterCustomerResponse{
-		CustomerID:   customer.ID,
+		CustomerId:   customer.ID,
 		IdentityHash: customer.IdentityHash,
-		KYCStatus:    string(customer.KYCStatus),
-		CreatedAt:    customer.CreatedAt,
+		KycStatus:    domainKYCStatusToProto(customer.KYCStatus),
+		CreatedAt:    timestamppb.New(customer.CreatedAt),
 	}, nil
 }
 
 // SubmitDocument processes a document image via OCR.
 func (h *KYCHandler) SubmitDocument(ctx context.Context, req *kycv1.SubmitDocumentRequest) (*kycv1.SubmitDocumentResponse, error) {
-	if req.CustomerID == "" || req.S3Key == "" || req.DocumentType == "" {
+	if req.CustomerId == "" || req.S3Key == "" || req.DocumentType == "" {
 		return nil, status.Error(codes.InvalidArgument, "customer_id, s3_key, and document_type are required")
 	}
 
 	in := &service.SubmitDocumentInput{
-		CustomerID:   req.CustomerID,
+		CustomerID:   req.CustomerId,
 		DocumentType: req.DocumentType,
 		S3Key:        req.S3Key,
 		ContentType:  req.ContentType,
@@ -94,13 +95,13 @@ func (h *KYCHandler) SubmitDocument(ctx context.Context, req *kycv1.SubmitDocume
 	}
 
 	resp := &kycv1.SubmitDocumentResponse{
-		DocumentID:  doc.ID,
-		Status:      doc.Status,
-		CompletedAt: doc.UpdatedAt,
+		DocumentId:   doc.ID,
+		Status:       doc.Status,
+		OcrCompleted: doc.OCRCompleted,
 	}
 
 	if doc.OCRResult != nil {
-		resp.OCRResult = domainOCRToProto(doc.OCRResult)
+		resp.OcrResult = domainOCRToProto(doc.OCRResult)
 	}
 
 	return resp, nil
@@ -108,12 +109,12 @@ func (h *KYCHandler) SubmitDocument(ctx context.Context, req *kycv1.SubmitDocume
 
 // VerifyFace performs biometric liveness and face-match checks.
 func (h *KYCHandler) VerifyFace(ctx context.Context, req *kycv1.VerifyFaceRequest) (*kycv1.VerifyFaceResponse, error) {
-	if req.CustomerID == "" || req.SelfieS3Key == "" || req.DocumentS3Key == "" {
+	if req.CustomerId == "" || req.SelfieS3Key == "" || req.DocumentS3Key == "" {
 		return nil, status.Error(codes.InvalidArgument, "customer_id, selfie_s3_key, and document_s3_key are required")
 	}
 
 	in := &service.VerifyFaceInput{
-		CustomerID:    req.CustomerID,
+		CustomerID:    req.CustomerId,
 		SelfieS3Key:   req.SelfieS3Key,
 		DocumentS3Key: req.DocumentS3Key,
 		CheckLiveness: req.CheckLiveness,
@@ -125,7 +126,6 @@ func (h *KYCHandler) VerifyFace(ctx context.Context, req *kycv1.VerifyFaceReques
 	}
 
 	return &kycv1.VerifyFaceResponse{
-		CustomerID:     req.CustomerID,
 		FaceMatch:      result.FaceMatch,
 		MatchScore:     result.MatchScore,
 		LivenessPassed: result.LivenessPassed,
@@ -137,15 +137,15 @@ func (h *KYCHandler) VerifyFace(ctx context.Context, req *kycv1.VerifyFaceReques
 
 // UpdateKYCStatus changes the KYC status of a customer.
 func (h *KYCHandler) UpdateKYCStatus(ctx context.Context, req *kycv1.UpdateKYCStatusRequest) (*kycv1.UpdateKYCStatusResponse, error) {
-	if req.CustomerID == "" || req.Status == "" {
-		return nil, status.Error(codes.InvalidArgument, "customer_id and status are required")
+	if req.CustomerId == "" || req.NewStatus == commonv1.KYCStatus_KYC_STATUS_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "customer_id and new_status are required")
 	}
 
 	in := &service.UpdateKYCStatusInput{
-		CustomerID: req.CustomerID,
-		Status:     domain.KYCStatus(req.Status),
-		RiskLevel:  domain.RiskLevel(req.RiskLevel),
-		VerifierID: req.VerifierID,
+		CustomerID: req.CustomerId,
+		Status:     protoKYCStatusToDomain(req.NewStatus),
+		RiskLevel:  protoRiskLevelToDomain(req.RiskLevel),
+		VerifierID: req.VerifierId,
 		Reason:     req.Reason,
 	}
 
@@ -155,21 +155,18 @@ func (h *KYCHandler) UpdateKYCStatus(ctx context.Context, req *kycv1.UpdateKYCSt
 	}
 
 	return &kycv1.UpdateKYCStatusResponse{
-		CustomerID:     customer.ID,
-		KYCStatus:      string(customer.KYCStatus),
-		RiskLevel:      string(customer.RiskLevel),
-		BlockchainTxID: customer.BlockchainTxID,
-		UpdatedAt:      customer.UpdatedAt,
+		UpdatedRecord:  domainCustomerToProto(customer),
+		BlockchainTxId: customer.BlockchainTxID,
 	}, nil
 }
 
 // GetKYCRecord retrieves the non-PII KYC record for a customer.
 func (h *KYCHandler) GetKYCRecord(ctx context.Context, req *kycv1.GetKYCRecordRequest) (*kycv1.GetKYCRecordResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, status.Error(codes.InvalidArgument, "customer_id is required")
 	}
 
-	customer, err := h.kycSvc.GetKYCRecord(ctx, req.CustomerID)
+	customer, err := h.kycSvc.GetKYCRecord(ctx, req.CustomerId)
 	if err != nil {
 		return nil, mapKYCError(err)
 	}
@@ -181,7 +178,7 @@ func (h *KYCHandler) GetKYCRecord(ctx context.Context, req *kycv1.GetKYCRecordRe
 
 // ListByStatus returns a paginated list of customers filtered by KYC status.
 func (h *KYCHandler) ListByStatus(ctx context.Context, req *kycv1.ListByStatusRequest) (*kycv1.ListByStatusResponse, error) {
-	if req.Status == "" {
+	if req.Status == commonv1.KYCStatus_KYC_STATUS_UNSPECIFIED {
 		return nil, status.Error(codes.InvalidArgument, "status is required")
 	}
 
@@ -194,7 +191,7 @@ func (h *KYCHandler) ListByStatus(ctx context.Context, req *kycv1.ListByStatusRe
 
 	customers, total, err := h.kycSvc.ListByStatus(
 		ctx,
-		domain.KYCStatus(req.Status),
+		protoKYCStatusToDomain(req.Status),
 		req.CountryCode,
 		limit, offset,
 	)
@@ -217,7 +214,7 @@ func (h *KYCHandler) ListByStatus(ctx context.Context, req *kycv1.ListByStatusRe
 
 // GetDecryptedPII retrieves and decrypts PII for a customer (privileged access only).
 func (h *KYCHandler) GetDecryptedPII(ctx context.Context, req *kycv1.GetDecryptedPIIRequest) (*kycv1.GetDecryptedPIIResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, status.Error(codes.InvalidArgument, "customer_id is required")
 	}
 	if req.Reason == "" {
@@ -230,40 +227,40 @@ func (h *KYCHandler) GetDecryptedPII(ctx context.Context, req *kycv1.GetDecrypte
 	}
 
 	// IMPORTANT: Do not log the result. The service layer handles audit logging.
-	result, err := h.kycSvc.GetDecryptedPII(ctx, req.CustomerID, actorID, req.Reason)
+	result, err := h.kycSvc.GetDecryptedPII(ctx, req.CustomerId, actorID, req.Reason)
 	if err != nil {
 		return nil, mapKYCError(err)
 	}
 
 	// DO NOT LOG any fields from result — all contain raw PII.
 	return &kycv1.GetDecryptedPIIResponse{
-		CustomerID:     result.CustomerID,
-		FullName:       result.FullName,       // DO NOT LOG
-		DateOfBirth:    result.DateOfBirth,    // DO NOT LOG
-		AddressLine1:   result.AddressLine1,   // DO NOT LOG
-		AddressLine2:   result.AddressLine2,   // DO NOT LOG
-		Email:          result.Email,          // DO NOT LOG
-		PhoneNumber:    result.PhoneNumber,    // DO NOT LOG
-		DocumentNumber: result.DocumentNumber, // DO NOT LOG
-		ExpiryDate:     result.ExpiryDate,     // DO NOT LOG
+		Pii: &kycv1.CustomerPII{
+			FullName:       result.FullName,
+			DateOfBirth:    result.DateOfBirth,
+			AddressLine1:   result.AddressLine1,
+			AddressLine2:   result.AddressLine2,
+			Email:          result.Email,
+			PhoneNumber:    result.PhoneNumber,
+			DocumentNumber: result.DocumentNumber,
+			ExpiryDate:     result.ExpiryDate,
+		},
 	}, nil
 }
 
 // GetCustomerRiskLevel returns the risk level and KYC status for a customer.
 func (h *KYCHandler) GetCustomerRiskLevel(ctx context.Context, req *kycv1.GetCustomerRiskLevelRequest) (*kycv1.GetCustomerRiskLevelResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, status.Error(codes.InvalidArgument, "customer_id is required")
 	}
 
-	customer, err := h.kycSvc.GetCustomerRiskLevel(ctx, req.CustomerID)
+	customer, err := h.kycSvc.GetCustomerRiskLevel(ctx, req.CustomerId)
 	if err != nil {
 		return nil, mapKYCError(err)
 	}
 
 	return &kycv1.GetCustomerRiskLevelResponse{
-		CustomerID:  customer.ID,
-		RiskLevel:   string(customer.RiskLevel),
-		KYCStatus:   string(customer.KYCStatus),
+		RiskLevel:   domainRiskLevelToProto(customer.RiskLevel),
+		KycStatus:   domainKYCStatusToProto(customer.KYCStatus),
 		CountryCode: customer.CountryCode,
 	}, nil
 }
@@ -283,34 +280,85 @@ func (h *KYCHandler) HealthCheck(ctx context.Context, _ *commonv1.HealthCheckReq
 // domainCustomerToProto converts a domain.Customer to its proto representation.
 func domainCustomerToProto(c *domain.Customer) *kycv1.KYCRecord {
 	rec := &kycv1.KYCRecord{
-		ID:                    c.ID,
-		IdentityHash:          c.IdentityHash,
-		KYCStatus:             string(c.KYCStatus),
-		RiskLevel:             string(c.RiskLevel),
-		DocumentType:          c.DocumentType,
-		CountryOfIssue:        c.CountryOfIssue,
-		Nationality:           c.Nationality,
-		City:                  c.City,
-		CountryCode:           c.CountryCode,
-		PostalCode:            c.PostalCode,
-		Occupation:            c.Occupation,
-		Employer:              c.Employer,
-		SourceOfFunds:         c.SourceOfFunds,
-		ExpectedMonthlyVolume: c.ExpectedMonthlyVolume,
-		LivenessPassed:        c.LivenessPassed,
-		FaceMatchScore:        c.FaceMatchScore,
-		OCRConfidence:         c.OCRConfidence,
-		VerifierID:            c.VerifierID,
-		RejectionReason:       c.RejectionReason,
-		BlockchainTxID:        c.BlockchainTxID,
-		CreatedAt:             c.CreatedAt,
-		UpdatedAt:             c.UpdatedAt,
+		CustomerId:      c.ID,
+		IdentityHash:    c.IdentityHash,
+		KycStatus:       domainKYCStatusToProto(c.KYCStatus),
+		RiskLevel:       domainRiskLevelToProto(c.RiskLevel),
+		DocumentType:    c.DocumentType,
+		CountryOfIssue:  c.CountryOfIssue,
+		LivenessPassed:  c.LivenessPassed,
+		FaceMatchScore:  c.FaceMatchScore,
+		OcrConfidence:   c.OCRConfidence,
+		VerifierId:      c.VerifierID,
+		RejectionReason: c.RejectionReason,
+		BlockchainTxId:  c.BlockchainTxID,
+		CreatedAt:       timestamppb.New(c.CreatedAt),
+		UpdatedAt:       timestamppb.New(c.UpdatedAt),
 	}
 	if c.ReviewedAt != nil {
-		t := *c.ReviewedAt
-		rec.ReviewedAt = &t
+		rec.ReviewedAt = timestamppb.New(*c.ReviewedAt)
 	}
 	return rec
+}
+
+func domainRiskLevelToProto(r domain.RiskLevel) commonv1.RiskLevel {
+	switch r {
+	case domain.RiskLevelLow:
+		return commonv1.RiskLevel_RISK_LEVEL_LOW
+	case domain.RiskLevelMedium:
+		return commonv1.RiskLevel_RISK_LEVEL_MEDIUM
+	case domain.RiskLevelHigh:
+		return commonv1.RiskLevel_RISK_LEVEL_HIGH
+	case domain.RiskLevelCritical:
+		return commonv1.RiskLevel_RISK_LEVEL_CRITICAL
+	default:
+		return commonv1.RiskLevel_RISK_LEVEL_UNSPECIFIED
+	}
+}
+
+func domainKYCStatusToProto(s domain.KYCStatus) commonv1.KYCStatus {
+	switch s {
+	case domain.KYCStatusPending:
+		return commonv1.KYCStatus_KYC_STATUS_PENDING
+	case domain.KYCStatusApproved:
+		return commonv1.KYCStatus_KYC_STATUS_APPROVED
+	case domain.KYCStatusRejected:
+		return commonv1.KYCStatus_KYC_STATUS_REJECTED
+	case domain.KYCStatusSuspended:
+		return commonv1.KYCStatus_KYC_STATUS_SUSPENDED
+	default:
+		return commonv1.KYCStatus_KYC_STATUS_UNSPECIFIED
+	}
+}
+
+func protoKYCStatusToDomain(s commonv1.KYCStatus) domain.KYCStatus {
+	switch s {
+	case commonv1.KYCStatus_KYC_STATUS_PENDING:
+		return domain.KYCStatusPending
+	case commonv1.KYCStatus_KYC_STATUS_APPROVED:
+		return domain.KYCStatusApproved
+	case commonv1.KYCStatus_KYC_STATUS_REJECTED:
+		return domain.KYCStatusRejected
+	case commonv1.KYCStatus_KYC_STATUS_SUSPENDED:
+		return domain.KYCStatusSuspended
+	default:
+		return domain.KYCStatusPending
+	}
+}
+
+func protoRiskLevelToDomain(r commonv1.RiskLevel) domain.RiskLevel {
+	switch r {
+	case commonv1.RiskLevel_RISK_LEVEL_LOW:
+		return domain.RiskLevelLow
+	case commonv1.RiskLevel_RISK_LEVEL_MEDIUM:
+		return domain.RiskLevelMedium
+	case commonv1.RiskLevel_RISK_LEVEL_HIGH:
+		return domain.RiskLevelHigh
+	case commonv1.RiskLevel_RISK_LEVEL_CRITICAL:
+		return domain.RiskLevelCritical
+	default:
+		return domain.RiskLevelUnspecified
+	}
 }
 
 // domainOCRToProto converts a domain.OCRResult to its proto representation.
@@ -322,7 +370,7 @@ func domainOCRToProto(o *domain.OCRResult) *kycv1.OCRResult {
 		NameMatch:       o.NameMatch,
 		Warnings:        o.Warnings,
 		ExtractedName:   o.ExtractedName,  // client responsibility not to log
-		ExtractedDOB:    o.ExtractedDOB,   // client responsibility not to log
+		ExtractedDob:    o.ExtractedDOB,   // client responsibility not to log
 		ExtractedDocNo:  o.ExtractedDocNo, // client responsibility not to log
 		ExtractedExpiry: o.ExtractedExpiry,
 	}

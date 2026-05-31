@@ -235,6 +235,9 @@ func (s *CaseService) GetCase(ctx context.Context, caseID string) (*domain.Case,
 	if err != nil {
 		log.Warn().Err(err).Str("case_id", caseID).Msg("failed to load actions")
 	}
+	if actions == nil {
+		actions = []*domain.CaseAction{}
+	}
 	return c, actions, nil
 }
 

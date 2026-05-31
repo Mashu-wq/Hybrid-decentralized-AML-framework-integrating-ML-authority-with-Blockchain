@@ -61,6 +61,8 @@ func NewServer(authSvc *service.AuthService, tokenSvc *service.TokenService, log
 		"/fraud.iam.v1.IAMService/MFAVerify",
 		"/fraud.iam.v1.IAMService/RefreshToken",
 		"/fraud.iam.v1.IAMService/HealthCheck",
+		"/fraud.iam.v1.IAMService/ValidateToken",  // called by gateway without a JWT
+		"/fraud.iam.v1.IAMService/GetPermissions", // called by gateway during setup
 		"/grpc.health.v1.Health/Check",
 		"/grpc.health.v1.Health/Watch",
 	}

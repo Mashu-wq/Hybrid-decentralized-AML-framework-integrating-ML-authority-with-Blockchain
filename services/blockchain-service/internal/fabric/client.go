@@ -12,6 +12,7 @@ import (
 	"github.com/fraud-detection/blockchain-service/internal/kafka"
 	"github.com/hyperledger/fabric-sdk-go/pkg/client/channel"
 	"github.com/hyperledger/fabric-sdk-go/pkg/client/event"
+	"github.com/hyperledger/fabric-sdk-go/pkg/client/ledger"
 	"github.com/hyperledger/fabric-sdk-go/pkg/client/resmgmt"
 	"github.com/hyperledger/fabric-sdk-go/pkg/common/providers/fab"
 	coreconfig "github.com/hyperledger/fabric-sdk-go/pkg/core/config"
@@ -207,13 +208,14 @@ func (g *gateway) Health(ctx context.Context) map[string]string {
 	results := make(map[string]string, len(g.pools))
 
 	for channelName := range g.pools {
-		client, err := g.pickClient(channelName)
+		channelCtx := g.sdk.ChannelContext(channelName, fabsdk.WithUser(g.cfg.Username), fabsdk.WithOrg(g.cfg.OrgName))
+		ledgerClient, err := ledger.New(channelCtx)
 		if err != nil {
 			results[channelName] = err.Error()
 			continue
 		}
 
-		info, err := client.QueryInfo(channel.WithTimeout(fab.Query, 10*time.Second))
+		info, err := ledgerClient.QueryInfo()
 		if err != nil {
 			results[channelName] = err.Error()
 			continue

@@ -3,6 +3,8 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,13 +20,14 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockStore struct {
-	cases      map[string]*domain.Case
+	mu           sync.Mutex
+	cases        map[string]*domain.Case
 	casesByAlert map[string]*domain.Case
-	evidence   map[string][]*domain.Evidence
-	actions    map[string][]*domain.CaseAction
-	createErr  error
-	getErr     error
-	pingErr    error
+	evidence     map[string][]*domain.Evidence
+	actions      map[string][]*domain.CaseAction
+	createErr    error
+	getErr       error
+	pingErr      error
 }
 
 func newMockStore() *mockStore {
@@ -48,6 +51,8 @@ func (m *mockStore) CreateCase(_ context.Context, c *domain.Case) error {
 	return nil
 }
 func (m *mockStore) GetCaseByID(_ context.Context, id string) (*domain.Case, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
@@ -104,6 +109,8 @@ func (m *mockStore) SetSAR(_ context.Context, caseID, s3Key, _ string) (*domain.
 	return c, nil
 }
 func (m *mockStore) UpdateCaseBlockchainTxID(_ context.Context, caseID, txID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if c, ok := m.cases[caseID]; ok {
 		c.BlockchainTxID = txID
 	}
@@ -150,6 +157,15 @@ func (m *mockStore) GetStats(_ context.Context, period string) (*domain.CaseStat
 }
 func (m *mockStore) Ping(_ context.Context) error { return m.pingErr }
 
+func (m *mockStore) addCase(c *domain.Case) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cases[c.CaseID] = c
+	if c.AlertID != "" {
+		m.casesByAlert[c.AlertID] = c
+	}
+}
+
 // ----
 
 type mockEvidenceStore struct {
@@ -182,11 +198,14 @@ func (m *mockEvidenceStore) DeleteObject(_ context.Context, key string) error {
 // ----
 
 type mockBlockchain struct {
+	mu       sync.Mutex
 	recorded []string
 	pingErr  error
 }
 
 func (m *mockBlockchain) RecordInvestigatorAction(_ context.Context, actionID, _, caseID, action, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.recorded = append(m.recorded, action)
 	return "fabric-tx-" + actionID[:8], nil
 }
@@ -340,7 +359,7 @@ func TestAutoAssign_RoundRobin(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		alertID := fmt.Sprintf("alert-%d", i)
 		caseID := fmt.Sprintf("case-%d", i)
-		store.cases[caseID] = &domain.Case{CaseID: caseID, AlertID: alertID, Status: domain.CaseStatusOpen}
+		store.addCase(&domain.Case{CaseID: caseID, AlertID: alertID, Status: domain.CaseStatusOpen})
 		c, err := svc.AssignCase(context.Background(), caseID, investigators[i%3], "system")
 		require.NoError(t, err)
 		assigned[c.AssigneeID]++

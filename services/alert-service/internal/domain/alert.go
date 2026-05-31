@@ -43,7 +43,7 @@ func PriorityFromFraudProb(prob float64) AlertPriority {
 	switch {
 	case prob > 0.85:
 		return PriorityCritical
-	case prob > 0.70:
+	case prob >= 0.70:
 		return PriorityHigh
 	case prob >= 0.50:
 		return PriorityMedium

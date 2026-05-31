@@ -73,7 +73,9 @@ func New(addrs ServiceAddrs, log zerolog.Logger) (*Router, error) {
 // ServeHTTP implements http.Handler — match the request to a route and proxy it.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for _, rt := range r.routes {
-		if strings.HasPrefix(req.URL.Path, rt.prefix) {
+		// Match both /prefix/ and /prefix (path without trailing slash)
+		noSlash := strings.TrimSuffix(rt.prefix, "/")
+		if strings.HasPrefix(req.URL.Path, rt.prefix) || req.URL.Path == noSlash {
 			rt.proxy.ServeHTTP(w, req)
 			return
 		}

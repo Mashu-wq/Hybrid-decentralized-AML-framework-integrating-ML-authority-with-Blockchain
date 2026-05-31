@@ -66,7 +66,10 @@ func (s *EmailSender) Send(ctx context.Context, a *domain.Alert, recipients []st
 		return "", fmt.Errorf("sendgrid status %d: %s", resp.StatusCode, resp.Body)
 	}
 
-	msgID := resp.Headers.Get("X-Message-Id")
+	var msgID string
+	if vals := resp.Headers["X-Message-Id"]; len(vals) > 0 {
+		msgID = vals[0]
+	}
 	log.Info().
 		Str("alert_id", a.AlertID).
 		Str("msg_id", msgID).

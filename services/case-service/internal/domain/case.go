@@ -80,7 +80,7 @@ func PriorityFromFraudProb(prob float64) CasePriority {
 	switch {
 	case prob > 0.85:
 		return CasePriorityCritical
-	case prob > 0.70:
+	case prob >= 0.70:
 		return CasePriorityHigh
 	case prob >= 0.50:
 		return CasePriorityMedium

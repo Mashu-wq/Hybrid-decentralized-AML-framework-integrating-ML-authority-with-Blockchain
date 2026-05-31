@@ -68,15 +68,15 @@ func run() error {
 	// -------------------------------------------------------------------------
 	ctx := context.Background()
 	if cfg.JaegerEndpoint != "" {
-		tp, tracerErr := tracing.Init(ctx, tracing.Config{
-			ServiceName: cfg.ServiceName,
-			Environment: cfg.Environment,
-			JaegerURL:   cfg.JaegerEndpoint,
+		shutdown, tracerErr := tracing.InitTracer(tracing.Config{
+			ServiceName:    cfg.ServiceName,
+			Environment:    cfg.Environment,
+			JaegerEndpoint: cfg.JaegerEndpoint,
 		})
 		if tracerErr != nil {
 			log.Warn().Err(tracerErr).Msg("tracing init failed — continuing without traces")
 		} else {
-			defer func() { _ = tp.Shutdown(ctx) }()
+			defer func() { _ = shutdown(ctx) }()
 		}
 	}
 

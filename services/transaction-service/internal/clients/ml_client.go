@@ -100,29 +100,29 @@ func (c *MLClient) HealthCheck(ctx context.Context) error {
 func domainFeaturesToProto(f *domain.TransactionFeatures) *mlv1.TransactionFeatures {
 	return &mlv1.TransactionFeatures{
 		TxHash:     f.TxHash,
-		CustomerID: f.CustomerID,
+		CustomerId: f.CustomerID,
 
 		TxHour:           int32(f.TxHour),
 		DayOfWeek:        int32(f.DayOfWeek),
 		IsWeekend:        f.IsWeekend,
 		TimeSinceLastTxS: f.TimeSinceLastTxS,
-		TxFrequency1H:    f.TxFrequency1H,
-		TxFrequency24H:   f.TxFrequency24H,
+		TxFrequency_1H:   f.TxFrequency1H,
+		TxFrequency_24H:  f.TxFrequency24H,
 
 		Amount:               f.Amount,
 		CurrencyCode:         f.CurrencyCode,
-		AmountUSDEquiv:       f.AmountUSDEquiv,
-		AvgAmount7D:          f.AvgAmount7D,
-		AvgAmount30D:         f.AvgAmount30D,
-		StdAmount30D:         f.StdAmount30D,
+		AmountUsdEquiv:       f.AmountUSDEquiv,
+		AvgAmount_7D:         f.AvgAmount7D,
+		AvgAmount_30D:        f.AvgAmount30D,
+		StdAmount_30D:        f.StdAmount30D,
 		AmountDeviationScore: f.AmountDeviationScore,
-		Velocity1H:           f.Velocity1H,
-		Velocity24H:          f.Velocity24H,
+		Velocity_1H:          f.Velocity1H,
+		Velocity_24H:         f.Velocity24H,
 
 		CountryCode:         f.CountryCode,
 		GeographicRiskScore: f.GeographicRiskScore,
 		CrossBorderFlag:     f.CrossBorderFlag,
-		CountryChange2H:     f.CountryChange2H,
+		CountryChange_2H:    f.CountryChange2H,
 		DistanceKmFromLast:  f.DistanceKmFromLast,
 
 		MerchantCategory:   f.MerchantCategory,
@@ -130,14 +130,14 @@ func domainFeaturesToProto(f *domain.TransactionFeatures) *mlv1.TransactionFeatu
 		IsHighRiskMerchant: f.IsHighRiskMerchant,
 
 		CustomerRiskScore: f.CustomerRiskScore,
-		KYCRiskLevel:      int32(f.KYCRiskLevel),
-		DaysSinceKYC:      int32(f.DaysSinceKYC),
-		TotalTxCount30D:   int32(f.TotalTxCount30D),
+		KycRiskLevel:      int32(f.KYCRiskLevel),
+		DaysSinceKyc:      int32(f.DaysSinceKYC),
+		TotalTxCount_30D:  int32(f.TotalTxCount30D),
 
 		Pagerank:              f.Pagerank,
 		ClusteringCoefficient: f.ClusteringCoefficient,
 		BetweennessCentrality: f.BetweennessCentrality,
-		LouvainCommunityID:    int32(f.LouvainCommunityID),
+		LouvainCommunityId:    int32(f.LouvainCommunityID),
 		HopsToKnownFraudster:  int32(f.HopsToKnownFraudster),
 		DirectFraudNeighbors:  int32(f.DirectFraudNeighbors),
 
@@ -157,8 +157,10 @@ func protoToDomainPrediction(r *mlv1.PredictFraudResponse) *domain.FraudPredicti
 		})
 	}
 
-	predictedAt := r.PredictedAt
-	if predictedAt.IsZero() {
+	var predictedAt time.Time
+	if r.PredictedAt != nil {
+		predictedAt = r.PredictedAt.AsTime()
+	} else {
 		predictedAt = time.Now().UTC()
 	}
 
@@ -167,7 +169,7 @@ func protoToDomainPrediction(r *mlv1.PredictFraudResponse) *domain.FraudPredicti
 		IsFraud:            r.IsFraud,
 		RiskLevel:          domain.RiskLevel(r.RiskLevel),
 		ModelVersion:       r.ModelVersion,
-		PredictionID:       r.PredictionID,
+		PredictionID:       r.PredictionId,
 		SHAPValues:         shap,
 		ModelProbabilities: r.ModelProbabilities,
 		BaseValue:          r.BaseValue,

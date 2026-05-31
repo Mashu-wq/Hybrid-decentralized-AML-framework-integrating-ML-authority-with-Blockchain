@@ -40,8 +40,12 @@ func NewServer(h *Handler, hub *ws.Hub, port int) *Server {
 	// WebSocket
 	mux.HandleFunc("/ws", hub.ServeWS)
 
-	// Alert endpoints — dispatched manually because Go 1.23 stdlib mux
-	// does not support path parameters; we parse them in the handler.
+	// Alert endpoints — both with and without /api/v1 prefix (gateway forwards full path)
+	mux.HandleFunc("/api/v1/alerts/stats", methodGuard(http.MethodGet, h.GetAlertStats))
+	mux.HandleFunc("/api/v1/alerts/customer/", methodGuard(http.MethodGet, h.GetAlertsByCustomer))
+	mux.HandleFunc("/api/v1/alerts/", alertRouter(h))
+	mux.HandleFunc("/api/v1/alerts", methodGuard(http.MethodGet, h.ListAlerts))
+	// Legacy bare paths kept for direct calls
 	mux.HandleFunc("/alerts/stats", methodGuard(http.MethodGet, h.GetAlertStats))
 	mux.HandleFunc("/alerts/customer/", methodGuard(http.MethodGet, h.GetAlertsByCustomer))
 	mux.HandleFunc("/alerts/", alertRouter(h))

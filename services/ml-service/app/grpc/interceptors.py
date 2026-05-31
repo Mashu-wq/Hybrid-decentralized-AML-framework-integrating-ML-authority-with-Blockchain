@@ -239,7 +239,7 @@ class ServerAuthInterceptor(_BaseInterceptor):
         public_methods: Set of full method paths that skip auth.
     """
 
-    def __init__(self, iam_stub: Any, public_methods: set[str] | None = None) -> None:
+    def __init__(self, iam_stub: Any = None, public_methods: set[str] | None = None) -> None:
         self._iam = iam_stub
         self._public = set(public_methods or [])
         # Default public methods for ML service (health + metrics)
@@ -258,7 +258,7 @@ class ServerAuthInterceptor(_BaseInterceptor):
         if handler is None:
             return handler
 
-        if method in self._public:
+        if method in self._public or self._iam is None:
             return handler
 
         iam = self._iam

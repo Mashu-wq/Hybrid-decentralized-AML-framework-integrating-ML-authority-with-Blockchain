@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Handler implements alertv1.AlertServiceServer.
@@ -37,25 +38,25 @@ func NewHandler(svc *service.AlertService, log zerolog.Logger) *Handler {
 // ---------------------------------------------------------------------------
 
 func (h *Handler) CreateAlert(ctx context.Context, req *alertv1.CreateAlertRequest) (*alertv1.CreateAlertResponse, error) {
-	if req.CustomerID == "" || req.TxHash == "" {
+	if req.CustomerId == "" || req.TxHash == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "customer_id and tx_hash are required")
 	}
 
 	event := &domain.AlertIngestEvent{
-		AlertID:              generateAlertID(req.CustomerID, req.TxHash),
-		CustomerID:           req.CustomerID,
+		AlertID:              generateAlertID(req.CustomerId, req.TxHash),
+		CustomerID:           req.CustomerId,
 		TxHash:               req.TxHash,
 		FraudProbability:     req.FraudProbability,
 		RiskScore:            req.RiskScore,
 		ModelVersion:         req.ModelVersion,
-		SHAPExplanationJSON:  req.SHAPExplanationJSON,
-		FeaturesSnapshotJSON: req.FeaturesSnapshotJSON,
+		SHAPExplanationJSON:  req.ShapExplanationJson,
+		FeaturesSnapshotJSON: req.FeaturesSnapshotJson,
 		CreatedAt:            time.Now().UTC(),
 	}
 
 	if err := h.svc.IngestAlert(ctx, event); err != nil {
 		if errors.Is(err, domain.ErrDuplicateAlert) {
-			return &alertv1.CreateAlertResponse{Duplicate: true, CreatedAt: time.Now().UTC()}, nil
+			return &alertv1.CreateAlertResponse{Duplicate: true, CreatedAt: timestamppb.Now()}, nil
 		}
 		return nil, mapDomainError(err)
 	}
@@ -64,16 +65,16 @@ func (h *Handler) CreateAlert(ctx context.Context, req *alertv1.CreateAlertReque
 	if err != nil {
 		// Created but couldn't read back — return minimal response
 		return &alertv1.CreateAlertResponse{
-			AlertID:   event.AlertID,
+			AlertId:   event.AlertID,
 			Priority:  alertv1.AlertPriority(domain.PriorityFromFraudProb(req.FraudProbability)),
-			CreatedAt: time.Now().UTC(),
+			CreatedAt: timestamppb.Now(),
 		}, nil
 	}
 
 	return &alertv1.CreateAlertResponse{
-		AlertID:   alert.AlertID,
+		AlertId:   alert.AlertID,
 		Priority:  alertv1.AlertPriority(alert.Priority),
-		CreatedAt: alert.CreatedAt,
+		CreatedAt: timestamppb.New(alert.CreatedAt),
 	}, nil
 }
 
@@ -82,10 +83,10 @@ func (h *Handler) CreateAlert(ctx context.Context, req *alertv1.CreateAlertReque
 // ---------------------------------------------------------------------------
 
 func (h *Handler) GetAlert(ctx context.Context, req *alertv1.GetAlertRequest) (*alertv1.GetAlertResponse, error) {
-	if req.AlertID == "" {
+	if req.AlertId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "alert_id is required")
 	}
-	a, err := h.svc.GetAlert(ctx, req.AlertID)
+	a, err := h.svc.GetAlert(ctx, req.AlertId)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -105,13 +106,20 @@ func (h *Handler) ListAlerts(ctx context.Context, req *alertv1.ListAlertsRequest
 		}
 	}
 
+	var startTime, endTime time.Time
+	if req.StartTime != nil {
+		startTime = req.StartTime.AsTime()
+	}
+	if req.EndTime != nil {
+		endTime = req.EndTime.AsTime()
+	}
 	f := domain.AlertFilters{
 		Status:       protoStatusToDomain(req.StatusFilter),
 		Priority:     domain.AlertPriority(req.PriorityFilter),
-		AssigneeID:   req.AssigneeID,
+		AssigneeID:   req.AssigneeId,
 		MinFraudProb: req.MinFraudProb,
-		StartTime:    req.StartTime,
-		EndTime:      req.EndTime,
+		StartTime:    startTime,
+		EndTime:      endTime,
 		SortBy:       req.SortBy,
 		Ascending:    req.Ascending,
 		PageSize:     pageSize,
@@ -139,14 +147,14 @@ func (h *Handler) ListAlerts(ctx context.Context, req *alertv1.ListAlertsRequest
 // ---------------------------------------------------------------------------
 
 func (h *Handler) GetAlertsByCustomer(ctx context.Context, req *alertv1.GetAlertsByCustomerRequest) (*alertv1.GetAlertsByCustomerResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "customer_id is required")
 	}
 	limit := 50
 	if req.Page != nil && req.Page.PageSize > 0 {
 		limit = int(req.Page.PageSize)
 	}
-	alerts, err := h.svc.GetAlertsByCustomer(ctx, req.CustomerID, limit, 0)
+	alerts, err := h.svc.GetAlertsByCustomer(ctx, req.CustomerId, limit, 0)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -162,14 +170,14 @@ func (h *Handler) GetAlertsByCustomer(ctx context.Context, req *alertv1.GetAlert
 // ---------------------------------------------------------------------------
 
 func (h *Handler) UpdateAlertStatus(ctx context.Context, req *alertv1.UpdateAlertStatusRequest) (*alertv1.UpdateAlertStatusResponse, error) {
-	if req.AlertID == "" {
+	if req.AlertId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "alert_id is required")
 	}
 	newStatus := protoStatusToDomain(req.NewStatus)
 	if newStatus == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "new_status is required")
 	}
-	updated, err := h.svc.UpdateStatus(ctx, req.AlertID, req.UpdatedBy, req.Notes, newStatus)
+	updated, err := h.svc.UpdateStatus(ctx, req.AlertId, req.UpdatedBy, req.Notes, newStatus)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -181,10 +189,10 @@ func (h *Handler) UpdateAlertStatus(ctx context.Context, req *alertv1.UpdateAler
 // ---------------------------------------------------------------------------
 
 func (h *Handler) AssignAlert(ctx context.Context, req *alertv1.AssignAlertRequest) (*alertv1.AssignAlertResponse, error) {
-	if req.AlertID == "" || req.AssigneeID == "" {
+	if req.AlertId == "" || req.AssigneeId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "alert_id and assignee_id are required")
 	}
-	updated, err := h.svc.AssignAlert(ctx, req.AlertID, req.AssigneeID)
+	updated, err := h.svc.AssignAlert(ctx, req.AlertId, req.AssigneeId)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -196,10 +204,10 @@ func (h *Handler) AssignAlert(ctx context.Context, req *alertv1.AssignAlertReque
 // ---------------------------------------------------------------------------
 
 func (h *Handler) EscalateAlert(ctx context.Context, req *alertv1.EscalateAlertRequest) (*alertv1.EscalateAlertResponse, error) {
-	if req.AlertID == "" {
+	if req.AlertId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "alert_id is required")
 	}
-	updated, err := h.svc.EscalateAlert(ctx, req.AlertID, req.EscalatedBy, req.Reason)
+	updated, err := h.svc.EscalateAlert(ctx, req.AlertId, req.EscalatedBy, req.Reason)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -211,10 +219,10 @@ func (h *Handler) EscalateAlert(ctx context.Context, req *alertv1.EscalateAlertR
 // ---------------------------------------------------------------------------
 
 func (h *Handler) SendNotification(ctx context.Context, req *alertv1.SendNotificationRequest) (*alertv1.SendNotificationResponse, error) {
-	if req.AlertID == "" {
+	if req.AlertId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "alert_id is required")
 	}
-	a, err := h.svc.GetAlert(ctx, req.AlertID)
+	a, err := h.svc.GetAlert(ctx, req.AlertId)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
@@ -241,7 +249,6 @@ func (h *Handler) GetAlertStats(ctx context.Context, req *alertv1.GetAlertStatsR
 			LowAlerts:            int32(stats.LowAlerts),
 			ResolvedAlerts:       int32(stats.ResolvedAlerts),
 			FalsePositives:       int32(stats.FalsePositives),
-			EscalatedAlerts:      int32(stats.EscalatedAlerts),
 			AvgFraudProbability:  stats.AvgFraudProbability,
 			FalsePositiveRate:    stats.FalsePositiveRate,
 			AvgResolutionTimeMin: stats.AvgResolutionTimeMin,
@@ -276,23 +283,30 @@ func (h *Handler) HealthCheck(ctx context.Context, _ *commonv1.HealthCheckReques
 // ---------------------------------------------------------------------------
 
 func domainToProto(a *domain.Alert) *alertv1.AlertRecord {
+	var assignedAt, resolvedAt *timestamppb.Timestamp
+	if a.AssignedAt != nil {
+		assignedAt = timestamppb.New(*a.AssignedAt)
+	}
+	if a.ResolvedAt != nil {
+		resolvedAt = timestamppb.New(*a.ResolvedAt)
+	}
 	return &alertv1.AlertRecord{
-		AlertID:             a.AlertID,
-		CustomerID:          a.CustomerID,
+		AlertId:             a.AlertID,
+		CustomerId:          a.CustomerID,
 		TxHash:              a.TxHash,
 		FraudProbability:    a.FraudProbability,
 		RiskScore:           a.RiskScore,
 		Status:              domainStatusToProto(a.Status),
 		Priority:            alertv1.AlertPriority(a.Priority),
 		ModelVersion:        a.ModelVersion,
-		SHAPExplanationJSON: a.SHAPExplanationJSON,
-		AssigneeID:          a.AssigneeID,
-		AssignedAt:          a.AssignedAt,
-		ResolvedAt:          a.ResolvedAt,
+		ShapExplanationJson: a.SHAPExplanationJSON,
+		AssigneeId:          a.AssigneeID,
+		AssignedAt:          assignedAt,
+		ResolvedAt:          resolvedAt,
 		ResolutionNotes:     a.ResolutionNotes,
-		BlockchainTxID:      a.BlockchainTxID,
-		CreatedAt:           a.CreatedAt,
-		UpdatedAt:           a.UpdatedAt,
+		BlockchainTxId:      a.BlockchainTxID,
+		CreatedAt:           timestamppb.New(a.CreatedAt),
+		UpdatedAt:           timestamppb.New(a.UpdatedAt),
 	}
 }
 

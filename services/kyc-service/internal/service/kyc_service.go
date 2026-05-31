@@ -159,16 +159,20 @@ func (s *KYCService) RegisterCustomer(ctx context.Context, in *RegisterCustomerI
 
 	// 3. Batch-encrypt all PII fields.
 	// DO NOT LOG the plaintext values in the fields map.
-	piiFields := map[string][]byte{
-		"full_name":       []byte(in.FullName),
-		"date_of_birth":   []byte(in.DateOfBirth),
-		"address_line1":   []byte(in.AddressLine1),
-		"address_line2":   []byte(in.AddressLine2),
-		"email":           []byte(in.Email),
-		"phone_number":    []byte(in.PhoneNumber),
-		"document_number": []byte(in.DocumentNumber),
-		"expiry_date":     []byte(in.ExpiryDate),
+	piiFields := map[string][]byte{}
+	addPII := func(key, val string) {
+		if val != "" {
+			piiFields[key] = []byte(val)
+		}
 	}
+	addPII("full_name", in.FullName)
+	addPII("date_of_birth", in.DateOfBirth)
+	addPII("address_line1", in.AddressLine1)
+	addPII("address_line2", in.AddressLine2)
+	addPII("email", in.Email)
+	addPII("phone_number", in.PhoneNumber)
+	addPII("document_number", in.DocumentNumber)
+	addPII("expiry_date", in.ExpiryDate)
 
 	customerID := uuid.New().String()
 
@@ -627,16 +631,20 @@ func (s *KYCService) GetDecryptedPII(ctx context.Context, customerID, actorID, r
 	}
 
 	// Batch decrypt via Encryption Service.
-	ciphertexts := map[string]string{
-		"full_name":       encPII.FullNameEnc,
-		"date_of_birth":   encPII.DateOfBirthEnc,
-		"address_line1":   encPII.AddressLine1Enc,
-		"address_line2":   encPII.AddressLine2Enc,
-		"email":           encPII.EmailEnc,
-		"phone_number":    encPII.PhoneNumberEnc,
-		"document_number": encPII.DocumentNumberEnc,
-		"expiry_date":     encPII.ExpiryDateEnc,
+	ciphertexts := map[string]string{}
+	addCipher := func(key, val string) {
+		if val != "" {
+			ciphertexts[key] = val
+		}
 	}
+	addCipher("full_name", encPII.FullNameEnc)
+	addCipher("date_of_birth", encPII.DateOfBirthEnc)
+	addCipher("address_line1", encPII.AddressLine1Enc)
+	addCipher("address_line2", encPII.AddressLine2Enc)
+	addCipher("email", encPII.EmailEnc)
+	addCipher("phone_number", encPII.PhoneNumberEnc)
+	addCipher("document_number", encPII.DocumentNumberEnc)
+	addCipher("expiry_date", encPII.ExpiryDateEnc)
 
 	decrypted, err := s.enc.BatchDecryptPII(ctx, customerID, ciphertexts)
 	if err != nil {

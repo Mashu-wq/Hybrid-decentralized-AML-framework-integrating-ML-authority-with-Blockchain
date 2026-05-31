@@ -140,7 +140,7 @@ func Auth(iamClient iamv1.IAMServiceClient, cacheBuffer time.Duration, log zerol
 					email:       resp.Email,
 					role:        resp.Role,
 					permissions: resp.Permissions,
-					expiresAt:   resp.ExpiresAt,
+					expiresAt:   resp.ExpiresAt.AsTime(),
 				}
 				cache.set(token, claims)
 			}

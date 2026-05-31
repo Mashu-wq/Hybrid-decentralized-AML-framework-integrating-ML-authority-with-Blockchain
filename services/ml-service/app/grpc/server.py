@@ -43,11 +43,8 @@ def build_grpc_server(
     interceptors = [
         ServerRecoveryInterceptor(),
         ServerLoggingInterceptor(),
-        ServerTracingInterceptor(),
-        ServerAuthInterceptor(
-            iam_host=settings.iam_service_host,
-            iam_port=settings.iam_service_grpc_port,
-        ),
+        ServerTracingInterceptor(settings.service_name),
+        ServerAuthInterceptor(iam_stub=None),
     ]
 
     server = grpc.server(

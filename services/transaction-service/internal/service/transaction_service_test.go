@@ -434,7 +434,6 @@ func TestHealthCheck_AllHealthy(t *testing.T) {
 }
 
 func TestHealthCheck_MongoUnhealthy(t *testing.T) {
-	txStore := &mockTxStore{}
 	// Override Ping to fail
 	svc := buildSvc(&mockExtractor{}, &mockPredictor{}, &failingPingStore{}, &mockVelocityStore{}, &mockAlertPublisher{})
 	err := svc.HealthCheck(context.Background())

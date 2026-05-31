@@ -16,12 +16,13 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Handler implements transactionv1.TransactionServiceServer.
 type Handler struct {
 	transactionv1.UnimplementedTransactionServiceServer
-	svc service.TransactionServiceInterface
+	svc TransactionServiceInterface
 	log zerolog.Logger
 }
 
@@ -86,7 +87,7 @@ func (h *Handler) IngestTransaction(ctx context.Context, req *transactionv1.Inge
 		FraudProbability: enriched.FraudProbability,
 		RiskLevel:        commonv1.RiskLevel(enriched.RiskLevel),
 		AlertCreated:     enriched.AlertCreated,
-		AlertID:          enriched.AlertID,
+		AlertId:          enriched.AlertID,
 	}, nil
 }
 
@@ -151,7 +152,7 @@ func (h *Handler) GetTransaction(ctx context.Context, req *transactionv1.GetTran
 
 // GetCustomerHistory returns paginated enriched transactions for a customer.
 func (h *Handler) GetCustomerHistory(ctx context.Context, req *transactionv1.GetCustomerHistoryRequest) (*transactionv1.GetCustomerHistoryResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "customer_id is required")
 	}
 
@@ -164,9 +165,17 @@ func (h *Handler) GetCustomerHistory(ctx context.Context, req *transactionv1.Get
 		pageToken = req.Page.PageToken
 	}
 
+	var startTime, endTime time.Time
+	if req.StartTime != nil {
+		startTime = req.StartTime.AsTime()
+	}
+	if req.EndTime != nil {
+		endTime = req.EndTime.AsTime()
+	}
+
 	txs, nextToken, err := h.svc.GetCustomerHistory(
-		ctx, req.CustomerID,
-		req.StartTime, req.EndTime,
+		ctx, req.CustomerId,
+		startTime, endTime,
 		req.MinFraudProb,
 		pageSize, pageToken,
 	)
@@ -194,22 +203,22 @@ func (h *Handler) GetCustomerHistory(ctx context.Context, req *transactionv1.Get
 
 // GetRiskScore returns the current risk score for a customer (cached 5 min).
 func (h *Handler) GetRiskScore(ctx context.Context, req *transactionv1.GetRiskScoreRequest) (*transactionv1.GetRiskScoreResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "customer_id is required")
 	}
 
-	score, err := h.svc.GetRiskScore(ctx, req.CustomerID)
+	score, err := h.svc.GetRiskScore(ctx, req.CustomerId)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
 
 	return &transactionv1.GetRiskScoreResponse{
-		CustomerID:        score.CustomerID,
+		CustomerId:        score.CustomerID,
 		CurrentRiskScore:  score.RiskScore,
 		RiskLevel:         commonv1.RiskLevel(score.RiskLevel),
-		FraudRate30D:      score.FraudRate30D,
-		AlertCount30D:     int32(score.AlertCount30D),
-		ComputedAt:        score.ComputedAt,
+		FraudRate_30D:     score.FraudRate30D,
+		AlertCount_30D:    int32(score.AlertCount30D),
+		ComputedAt:        timestamppb.New(score.ComputedAt),
 	}, nil
 }
 
@@ -235,8 +244,8 @@ func (h *Handler) GetFeatures(ctx context.Context, req *transactionv1.GetFeature
 
 	return &transactionv1.GetFeaturesResponse{
 		Features:        protoFeatures,
-		ComputedAt:      enriched.ProcessedAt,
-		PipelineVersion: "1.0.0", // TODO: store pipeline_version in enriched tx
+		ComputedAt:      timestamppb.New(enriched.ProcessedAt),
+		PipelineVersion: "1.0.0",
 	}, nil
 }
 
@@ -246,27 +255,27 @@ func (h *Handler) GetFeatures(ctx context.Context, req *transactionv1.GetFeature
 
 // GetVelocityStats returns real-time velocity statistics for a customer.
 func (h *Handler) GetVelocityStats(ctx context.Context, req *transactionv1.GetVelocityStatsRequest) (*transactionv1.GetVelocityStatsResponse, error) {
-	if req.CustomerID == "" {
+	if req.CustomerId == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "customer_id is required")
 	}
 
-	stats, err := h.svc.GetVelocityStats(ctx, req.CustomerID)
+	stats, err := h.svc.GetVelocityStats(ctx, req.CustomerId)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
 
 	return &transactionv1.GetVelocityStatsResponse{
-		CustomerID:           stats.CustomerID,
-		TxCount1H:            int32(stats.TxCount1H),
-		TxCount24H:           int32(stats.TxCount24H),
-		TxCount7D:            int32(stats.TxCount7D),
-		TotalAmount1H:        stats.TotalAmount1H,
-		TotalAmount24H:       stats.TotalAmount24H,
-		TotalAmount7D:        stats.TotalAmount7D,
-		DistinctCountries24H: int32(stats.DistinctCountries24H),
-		DistinctMerchants24H: int32(stats.DistinctMerchants24H),
-		VelocityAlert1H:      stats.VelocityAlert1H,
-		VelocityAlert24H:     stats.VelocityAlert24H,
+		CustomerId:            stats.CustomerID,
+		TxCount_1H:            int32(stats.TxCount1H),
+		TxCount_24H:           int32(stats.TxCount24H),
+		TxCount_7D:            int32(stats.TxCount7D),
+		TotalAmount_1H:        stats.TotalAmount1H,
+		TotalAmount_24H:       stats.TotalAmount24H,
+		TotalAmount_7D:        stats.TotalAmount7D,
+		DistinctCountries_24H: int32(stats.DistinctCountries24H),
+		DistinctMerchants_24H: int32(stats.DistinctMerchants24H),
+		VelocityAlert_1H:      stats.VelocityAlert1H,
+		VelocityAlert_24H:     stats.VelocityAlert24H,
 	}, nil
 }
 
@@ -296,21 +305,30 @@ func protoToRaw(p *transactionv1.RawTransaction) *domain.RawTransaction {
 	if p == nil {
 		return nil
 	}
+	var txAt time.Time
+	if p.TransactionAt != nil {
+		txAt = p.TransactionAt.AsTime()
+	}
+	var lat, lon float64
+	if p.Location != nil {
+		lat = p.Location.Latitude
+		lon = p.Location.Longitude
+	}
 	return &domain.RawTransaction{
 		TxHash:              p.TxHash,
-		CustomerID:          p.CustomerID,
+		CustomerID:          p.CustomerId,
 		Amount:              p.Amount,
 		CurrencyCode:        p.CurrencyCode,
-		MerchantID:          p.MerchantID,
+		MerchantID:          p.MerchantId,
 		MerchantName:        p.MerchantName,
 		MerchantCategory:    p.MerchantCategory,
 		CountryCode:         p.CountryCode,
 		Channel:             p.Channel,
-		CounterpartyID:      p.CounterpartyID,
+		CounterpartyID:      p.CounterpartyId,
 		CounterpartyCountry: p.CounterpartyCountry,
-		Latitude:            p.Latitude,
-		Longitude:           p.Longitude,
-		TransactionAt:       p.TransactionAt,
+		Latitude:            lat,
+		Longitude:           lon,
+		TransactionAt:       txAt,
 		Metadata:            p.Metadata,
 	}
 }
@@ -322,19 +340,18 @@ func enrichedToProto(e *domain.EnrichedTransaction) *transactionv1.EnrichedTrans
 	raw := &transactionv1.RawTransaction{}
 	if e.Raw != nil {
 		raw.TxHash = e.Raw.TxHash
-		raw.CustomerID = e.Raw.CustomerID
+		raw.CustomerId = e.Raw.CustomerID
 		raw.Amount = e.Raw.Amount
 		raw.CurrencyCode = e.Raw.CurrencyCode
-		raw.MerchantID = e.Raw.MerchantID
+		raw.MerchantId = e.Raw.MerchantID
 		raw.MerchantName = e.Raw.MerchantName
 		raw.MerchantCategory = e.Raw.MerchantCategory
 		raw.CountryCode = e.Raw.CountryCode
 		raw.Channel = e.Raw.Channel
-		raw.CounterpartyID = e.Raw.CounterpartyID
+		raw.CounterpartyId = e.Raw.CounterpartyID
 		raw.CounterpartyCountry = e.Raw.CounterpartyCountry
-		raw.Latitude = e.Raw.Latitude
-		raw.Longitude = e.Raw.Longitude
-		raw.TransactionAt = e.Raw.TransactionAt
+		raw.Location = &commonv1.GeoLocation{Latitude: e.Raw.Latitude, Longitude: e.Raw.Longitude}
+		raw.TransactionAt = timestamppb.New(e.Raw.TransactionAt)
 		raw.Metadata = e.Raw.Metadata
 	}
 
@@ -343,9 +360,9 @@ func enrichedToProto(e *domain.EnrichedTransaction) *transactionv1.EnrichedTrans
 		protoFeatures = domainFeaturesToProto(e.Features)
 	}
 
-	shap := make([]commonv1.SHAPContribution, 0, len(e.SHAPValues))
+	shap := make([]*commonv1.SHAPContribution, 0, len(e.SHAPValues))
 	for _, s := range e.SHAPValues {
-		shap = append(shap, commonv1.SHAPContribution{
+		shap = append(shap, &commonv1.SHAPContribution{
 			FeatureName:   s.FeatureName,
 			FeatureValue:  s.FeatureValue,
 			ShapValue:     s.SHAPValue,
@@ -361,8 +378,8 @@ func enrichedToProto(e *domain.EnrichedTransaction) *transactionv1.EnrichedTrans
 		ModelVersion:     e.ModelVersion,
 		ShapValues:       shap,
 		AlertCreated:     e.AlertCreated,
-		AlertID:          e.AlertID,
-		ProcessedAt:      e.ProcessedAt,
+		AlertId:          e.AlertID,
+		ProcessedAt:      timestamppb.New(e.ProcessedAt),
 	}
 }
 
@@ -372,38 +389,38 @@ func domainFeaturesToProto(f *domain.TransactionFeatures) *mlv1.TransactionFeatu
 	}
 	return &mlv1.TransactionFeatures{
 		TxHash:               f.TxHash,
-		CustomerID:           f.CustomerID,
+		CustomerId:           f.CustomerID,
 		TxHour:               int32(f.TxHour),
 		DayOfWeek:            int32(f.DayOfWeek),
 		IsWeekend:            f.IsWeekend,
 		TimeSinceLastTxS:     f.TimeSinceLastTxS,
-		TxFrequency1H:        f.TxFrequency1H,
-		TxFrequency24H:       f.TxFrequency24H,
+		TxFrequency_1H:       f.TxFrequency1H,
+		TxFrequency_24H:      f.TxFrequency24H,
 		Amount:               f.Amount,
 		CurrencyCode:         f.CurrencyCode,
-		AmountUSDEquiv:       f.AmountUSDEquiv,
-		AvgAmount7D:          f.AvgAmount7D,
-		AvgAmount30D:         f.AvgAmount30D,
-		StdAmount30D:         f.StdAmount30D,
+		AmountUsdEquiv:       f.AmountUSDEquiv,
+		AvgAmount_7D:         f.AvgAmount7D,
+		AvgAmount_30D:        f.AvgAmount30D,
+		StdAmount_30D:        f.StdAmount30D,
 		AmountDeviationScore: f.AmountDeviationScore,
-		Velocity1H:           f.Velocity1H,
-		Velocity24H:          f.Velocity24H,
+		Velocity_1H:          f.Velocity1H,
+		Velocity_24H:         f.Velocity24H,
 		CountryCode:          f.CountryCode,
 		GeographicRiskScore:  f.GeographicRiskScore,
 		CrossBorderFlag:      f.CrossBorderFlag,
-		CountryChange2H:      f.CountryChange2H,
+		CountryChange_2H:     f.CountryChange2H,
 		DistanceKmFromLast:   f.DistanceKmFromLast,
 		MerchantCategory:     f.MerchantCategory,
 		MerchantRiskScore:    f.MerchantRiskScore,
 		IsHighRiskMerchant:   f.IsHighRiskMerchant,
 		CustomerRiskScore:    f.CustomerRiskScore,
-		KYCRiskLevel:         int32(f.KYCRiskLevel),
-		DaysSinceKYC:         int32(f.DaysSinceKYC),
-		TotalTxCount30D:      int32(f.TotalTxCount30D),
+		KycRiskLevel:         int32(f.KYCRiskLevel),
+		DaysSinceKyc:         int32(f.DaysSinceKYC),
+		TotalTxCount_30D:     int32(f.TotalTxCount30D),
 		Pagerank:             f.Pagerank,
 		ClusteringCoefficient: f.ClusteringCoefficient,
 		BetweennessCentrality: f.BetweennessCentrality,
-		LouvainCommunityID:   int32(f.LouvainCommunityID),
+		LouvainCommunityId:   int32(f.LouvainCommunityID),
 		HopsToKnownFraudster: int32(f.HopsToKnownFraudster),
 		DirectFraudNeighbors: int32(f.DirectFraudNeighbors),
 		EllipticFeatures:     f.EllipticFeatures,

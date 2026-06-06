@@ -19,12 +19,13 @@ All RPCs:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
-from datetime import datetime
-from typing import Any
+from collections import deque
 
 import grpc
+import mlflow
 import numpy as np
 
 from app.core.config import settings
@@ -54,25 +55,22 @@ class FraudMLServicer:
         self._registry    = registry
         self._pipeline    = feature_pipeline
         self._shap_cache  = shap_cache
+        # Ring buffer of recent PredictFraud responses for StreamPredictions
+        self._recent_predictions: deque = deque(maxlen=500)
+        self._predictions_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Face verification (stub — real ML lives in KYC service)
     # ------------------------------------------------------------------
 
     def VerifyFace(self, request, context):
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("face verification is not configured")
         try:
             from proto.gen.python.fraud.v1.fraud_pb2 import VerifyFaceResponse
         except ImportError:
             from fraud_pb2 import VerifyFaceResponse  # type: ignore
-
-        # Mock: always pass (replace with real DeepFace / FaceNet inference)
-        return VerifyFaceResponse(
-            face_match=True,
-            match_score=0.92,
-            liveness_passed=True,
-            liveness_score=0.98,
-            model_version="mock-v1",
-        )
+        return VerifyFaceResponse()
 
     # ------------------------------------------------------------------
     # Primary prediction
@@ -136,7 +134,7 @@ class FraudMLServicer:
         self._shap_cache[prediction_id] = (X.copy(), shap_values)
         _trim_cache(self._shap_cache)
 
-        return PredictFraudResponse(
+        response = PredictFraudResponse(
             fraud_probability=fraud_prob,
             is_fraud=is_fraud,
             risk_level=_risk_level_enum(fraud_prob),
@@ -147,6 +145,9 @@ class FraudMLServicer:
             prediction_id=prediction_id,
             latency_ms=round(latency_ms, 3),
         )
+        with self._predictions_lock:
+            self._recent_predictions.append(response)
+        return response
 
     # ------------------------------------------------------------------
     # Batch prediction
@@ -205,17 +206,18 @@ class FraudMLServicer:
     # ------------------------------------------------------------------
 
     def StreamPredictions(self, request, context):
-        """Stream predictions above min_fraud_prob threshold (demo: yields 0 items).
-
-        In production: subscribe to the tx.events Kafka topic and yield
-        PredictFraudResponse for each transaction processed in real-time.
-        """
-        logger.info(
-            "StreamPredictions: min_fraud_prob=%.2f (streaming not yet connected to Kafka)",
-            request.min_fraud_prob,
-        )
-        # Yield nothing — client receives end-of-stream immediately
-        return iter([])
+        """Stream recent predictions above min_fraud_prob from the in-process ring buffer."""
+        threshold = request.min_fraud_prob or 0.0
+        with self._predictions_lock:
+            snapshot = list(self._recent_predictions)
+        yielded = 0
+        for pred in snapshot:
+            if not context.is_active():
+                break
+            if pred.fraud_probability >= threshold:
+                yield pred
+                yielded += 1
+        logger.info("StreamPredictions: threshold=%.2f yielded=%d", threshold, yielded)
 
     # ------------------------------------------------------------------
     # Explainability
@@ -425,15 +427,46 @@ class FraudMLServicer:
             from fraud_pb2 import TriggerRetrainingResponse  # type: ignore
 
         job_id = str(uuid.uuid4())
-        logger.info(
-            "TriggerRetraining: model=%s reason=%s job_id=%s",
-            request.model_name, request.reason, job_id,
-        )
-        # In production: submit an MLflow run via mlflow.projects.run()
+        model_target = request.model_name or "all"
+        mlflow_run_id = None
+        status = "QUEUED"
+
+        try:
+            mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+            client = mlflow.tracking.MlflowClient()
+            experiment = client.get_experiment_by_name(settings.mlflow_experiment_name)
+            if experiment is None:
+                experiment_id = client.create_experiment(settings.mlflow_experiment_name)
+            else:
+                experiment_id = experiment.experiment_id
+
+            run = client.create_run(
+                experiment_id=experiment_id,
+                run_name=f"retrain-{model_target}-{job_id[:8]}",
+                tags={
+                    "mlflow.runName": f"retrain-{model_target}-{job_id[:8]}",
+                    "job_id": job_id,
+                    "model_target": model_target,
+                    "reason": request.reason or "",
+                    "triggered_by": "api",
+                    "status": "SCHEDULED",
+                },
+            )
+            mlflow_run_id = run.info.run_id
+            logger.info(
+                "TriggerRetraining: model=%s job_id=%s mlflow_run_id=%s",
+                model_target, job_id, mlflow_run_id,
+            )
+        except Exception as exc:
+            logger.error("TriggerRetraining: MLflow run creation failed: %s", exc)
+
         return TriggerRetrainingResponse(
             job_id=job_id,
-            status="QUEUED",
-            message=f"Retraining queued for model '{request.model_name or 'all'}'",
+            status=status,
+            message=(
+                f"Retraining scheduled for model '{model_target}'"
+                + (f" (MLflow run: {mlflow_run_id})" if mlflow_run_id else " (MLflow unavailable)")
+            ),
         )
 
     # ------------------------------------------------------------------

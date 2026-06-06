@@ -35,21 +35,9 @@ type Config struct {
 	KYCEventsTopic  string
 	WriterBatchSize int
 
-	// --- AWS ---
-	AWSRegion      string
-	AWSAccessKey   string
-	AWSSecretKey   string
-	TextractBucket string
-
 	// --- Downstream services ---
 	EncryptionServiceAddr string
 	BlockchainServiceAddr string
-	MLServiceAddr         string
-
-	// --- Feature flags ---
-	UseMockTextract   bool
-	UseMockFaceMatch  bool
-	UseStubBlockchain bool
 
 	// --- Local document upload support ---
 	DocumentUploadDir  string
@@ -57,10 +45,6 @@ type Config struct {
 
 	// --- Observability ---
 	JaegerEndpoint string
-
-	// --- Thresholds ---
-	FaceMatchThreshold     float64
-	OCRConfidenceThreshold float64
 }
 
 // Load reads configuration from environment variables.
@@ -85,27 +69,13 @@ func Load() (*Config, error) {
 		KYCEventsTopic:  env("KYC_EVENTS_TOPIC", "kyc.events"),
 		WriterBatchSize: envInt("KAFKA_WRITER_BATCH_SIZE", 10),
 
-		AWSRegion:      env("AWS_REGION", "us-east-1"),
-		AWSAccessKey:   env("AWS_ACCESS_KEY_ID", ""),
-		AWSSecretKey:   env("AWS_SECRET_ACCESS_KEY", ""),
-		TextractBucket: env("TEXTRACT_S3_BUCKET", "kyc-documents"),
-
 		EncryptionServiceAddr: env("ENCRYPTION_SERVICE_ADDR", "localhost:50064"),
-		BlockchainServiceAddr: env("BLOCKCHAIN_SERVICE_ADDR", "localhost:50063"),
-		MLServiceAddr:         env("ML_SERVICE_ADDR", "localhost:50065"),
-
-		// Default to mock in development; disable in production.
-		UseMockTextract:   envBool("USE_MOCK_TEXTRACT", true),
-		UseMockFaceMatch:  envBool("USE_MOCK_FACE_MATCH", true),
-		UseStubBlockchain: envBool("USE_STUB_BLOCKCHAIN", true),
+		BlockchainServiceAddr: env("BLOCKCHAIN_SERVICE_ADDR", "localhost:9005"),
 
 		DocumentUploadDir:  env("DOCUMENT_UPLOAD_DIR", "tmp/kyc-uploads"),
 		MaxUploadSizeBytes: envInt64("MAX_UPLOAD_SIZE_BYTES", 10<<20),
 
 		JaegerEndpoint: env("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"),
-
-		FaceMatchThreshold:     envFloat("FACE_MATCH_THRESHOLD", 0.85),
-		OCRConfidenceThreshold: envFloat("OCR_CONFIDENCE_THRESHOLD", 0.75),
 	}
 
 	if cfg.PostgresPass == "" {
@@ -124,9 +94,7 @@ func Load() (*Config, error) {
 		Str("env", cfg.Environment).
 		Int("http_port", cfg.HTTPPort).
 		Int("grpc_port", cfg.GRPCPort).
-		Bool("mock_textract", cfg.UseMockTextract).
-		Bool("mock_face_match", cfg.UseMockFaceMatch).
-		Bool("stub_blockchain", cfg.UseStubBlockchain).
+		Str("blockchain_addr", cfg.BlockchainServiceAddr).
 		Str("document_upload_dir", cfg.DocumentUploadDir).
 		Msg("configuration loaded")
 
@@ -152,22 +120,6 @@ func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
-		}
-	}
-	return def
-}
-
-func envBool(key string, def bool) bool {
-	if v := os.Getenv(key); v != "" {
-		return v == "true" || v == "1" || v == "yes"
-	}
-	return def
-}
-
-func envFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
 		}
 	}
 	return def

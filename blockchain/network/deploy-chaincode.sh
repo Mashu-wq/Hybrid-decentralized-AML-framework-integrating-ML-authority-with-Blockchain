@@ -20,7 +20,7 @@ source "${ROOT_DIR}/setOrgEnv.sh"
 
 package_chaincode() {
   local label="${CHAINCODE_NAME}_${VERSION}"
-  peer lifecycle chaincode package "${ROOT_DIR}/${CHAINCODE_NAME}.tar.gz" \
+  GOWORK=off peer lifecycle chaincode package "${ROOT_DIR}/${CHAINCODE_NAME}.tar.gz" \
     --path "${CHAINCODE_PATH}" \
     --lang golang \
     --label "${label}"
@@ -29,13 +29,23 @@ package_chaincode() {
 install_for_org() {
   local org="$1"
   setGlobals "${org}"
-  peer lifecycle chaincode install "${ROOT_DIR}/${CHAINCODE_NAME}.tar.gz"
+  local out
+  out=$(peer lifecycle chaincode install "${ROOT_DIR}/${CHAINCODE_NAME}.tar.gz" 2>&1) || {
+    if echo "${out}" | grep -q "already successfully installed"; then
+      echo "Chaincode already installed on ${org}, skipping."
+    else
+      echo "${out}" >&2
+      return 1
+    fi
+  }
+  echo "${out}"
 }
 
 approve_for_org() {
   local org="$1"
   setGlobals "${org}"
-  peer lifecycle chaincode approveformyorg \
+  local out
+  out=$(peer lifecycle chaincode approveformyorg \
     -o localhost:7050 \
     --ordererTLSHostnameOverride orderer0.fraud-detection.example.com \
     --channelID "${CHANNEL_NAME}" \
@@ -43,7 +53,15 @@ approve_for_org() {
     --version "${VERSION}" \
     --package-id "${PACKAGE_ID}" \
     --sequence "${SEQUENCE}" \
-    --tls --cafile "${ORDERER_CA}"
+    --tls --cafile "${ORDERER_CA}" 2>&1) || {
+    if echo "${out}" | grep -q "unchanged content"; then
+      echo "Chaincode already approved for ${org}, skipping."
+    else
+      echo "${out}" >&2
+      return 1
+    fi
+  }
+  echo "${out}"
 }
 
 main() {
@@ -63,6 +81,9 @@ main() {
   approve_for_org Org2
   approve_for_org Org3
 
+  # peer lifecycle chaincode commit resolves --peerAddresses hostnames for TLS SNI.
+  # We connect via localhost-mapped ports but need the cert's SAN hostname for TLS.
+  # Requires /etc/hosts entries: 127.0.0.1 peer0.org{1,2,3}.fraud-detection.example.com
   setGlobals Org1
   peer lifecycle chaincode commit \
     -o localhost:7050 \
@@ -72,9 +93,9 @@ main() {
     --version "${VERSION}" \
     --sequence "${SEQUENCE}" \
     --tls --cafile "${ORDERER_CA}" \
-    --peerAddresses localhost:7051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt" \
-    --peerAddresses localhost:9051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt" \
-    --peerAddresses localhost:11051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls/ca.crt"
+    --peerAddresses peer0.org1.fraud-detection.example.com:7051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt" \
+    --peerAddresses peer0.org2.fraud-detection.example.com:9051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt" \
+    --peerAddresses peer0.org3.fraud-detection.example.com:11051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls/ca.crt"
 
   echo "${CHAINCODE_NAME} committed on ${CHANNEL_NAME}"
 }

@@ -7,6 +7,9 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+-include .env
+export
+
 # --- Project Config ---
 PROJECT_NAME   := fraud-detection-system
 GO_VERSION     := 1.22
@@ -372,7 +375,7 @@ ml-evaluate: ## Evaluate all models and generate comparison table
 
 .PHONY: ml-serve
 ml-serve: ## Start ML service locally (FastAPI + gRPC)
-	@cd services/ml-service && poetry run python -m app.main
+	@cd services/ml-service && PYTHONPATH="$(PWD)" MODEL_ARTIFACT_PATH="$(PWD)/ml/artifacts" poetry run python main.py
 
 # =============================================================================
 # RUN SERVICES
@@ -386,7 +389,7 @@ run: ## Start all services with docker-compose
 run-svc: ## Run a specific Go service locally: make run-svc SVC=iam-service
 	@if [ -z "$(SVC)" ]; then echo "$(RED)Usage: make run-svc SVC=<service-name>$(RESET)"; exit 1; fi
 	@echo "$(BLUE)► Starting $(SVC)...$(RESET)"
-	@cd services/$(SVC) && go run ./cmd/main.go
+	@cd services/$(SVC) && go run ./cmd/server/main.go
 
 # =============================================================================
 # BLOCKCHAIN

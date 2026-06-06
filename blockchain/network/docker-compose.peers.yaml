@@ -5,7 +5,7 @@ x-peer-base: &peer-base
   environment:
     - FABRIC_LOGGING_SPEC=INFO
     - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
-    - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=network_default
+    - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
     - CORE_PEER_TLS_ENABLED=true
     - CORE_PEER_GOSSIP_USELEADERELECTION=true
     - CORE_PEER_GOSSIP_ORGLEADER=false
@@ -23,6 +23,9 @@ services:
     <<: *peer-base
     container_name: peer0.org1.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer0.org1.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer0.org1.fraud-detection.example.com:7051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:7051
@@ -36,14 +39,21 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb0:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["7051:7051"]
 
   peer1.org1:
     <<: *peer-base
     container_name: peer1.org1.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer1.org1.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer1.org1.fraud-detection.example.com:8051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:8051
@@ -57,14 +67,21 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb1:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer1.org1.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer1.org1.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org1.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["8051:8051"]
 
   peer0.org2:
     <<: *peer-base
     container_name: peer0.org2.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer0.org2.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer0.org2.fraud-detection.example.com:9051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:9051
@@ -78,14 +95,21 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb2:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["9051:9051"]
 
   peer1.org2:
     <<: *peer-base
     container_name: peer1.org2.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer1.org2.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer1.org2.fraud-detection.example.com:10051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:10051
@@ -99,14 +123,21 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb3:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer1.org2.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer1.org2.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org2.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["10051:10051"]
 
   peer0.org3:
     <<: *peer-base
     container_name: peer0.org3.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer0.org3.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer0.org3.fraud-detection.example.com:11051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:11051
@@ -120,14 +151,21 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb4:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["11051:11051"]
 
   peer1.org3:
     <<: *peer-base
     container_name: peer1.org3.fraud-detection.example.com
     environment:
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=fabric
+      - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_ID=peer1.org3.fraud-detection.example.com
       - CORE_PEER_ADDRESS=peer1.org3.fraud-detection.example.com:12051
       - CORE_PEER_LISTENADDRESS=0.0.0.0:12051
@@ -141,6 +179,10 @@ services:
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb5:5984
     volumes:
+      - /var/run/docker.sock:/host/var/run/docker.sock
+      - ./channel-artifacts:/etc/hyperledger/channel-artifacts
+      - ./crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls:/etc/hyperledger/orderer/tls
       - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer1.org3.fraud-detection.example.com/msp:/etc/hyperledger/fabric/msp
       - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer1.org3.fraud-detection.example.com/tls:/etc/hyperledger/fabric/tls
+      - ./crypto-config/peerOrganizations/org3.fraud-detection.example.com/users:/etc/hyperledger/fabric/users
     ports: ["12051:12051"]

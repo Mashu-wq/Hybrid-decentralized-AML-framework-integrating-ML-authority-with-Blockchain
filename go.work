@@ -1,17 +1,15 @@
-go 1.23
-
-toolchain go1.23.5
+go 1.25.0
 
 use (
+	./proto/gen/go
+	./services/alert-service
+	./services/analytics-service
 	./services/api-gateway
+	./services/blockchain-service
+	./services/case-service
+	./services/encryption-service
 	./services/iam-service
 	./services/kyc-service
 	./services/transaction-service
-	./services/blockchain-service
-	./services/alert-service
-	./services/case-service
-	./services/analytics-service
-	./services/encryption-service
 	./shared/go
-	./proto/gen/go
 )

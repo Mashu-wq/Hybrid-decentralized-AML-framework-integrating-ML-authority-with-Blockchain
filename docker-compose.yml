@@ -65,7 +65,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/db/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     networks:
       fraud-net:
         ipv4_address: 172.20.0.10
@@ -423,7 +423,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-fraud_user}:${POSTGRES_PASSWORD:-changeme_strong_password}@postgres:5432/${POSTGRES_DB:-fraud_detection}
+      MLFLOW_BACKEND_STORE_URI: sqlite:////mlflow/mlflow.db
       MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
       MLFLOW_HOST: 0.0.0.0
       MLFLOW_PORT: 5000
@@ -436,7 +436,7 @@ services:
         ipv4_address: 172.20.0.40
     command: >
       mlflow server
-      --backend-store-uri postgresql://${POSTGRES_USER:-fraud_user}:${POSTGRES_PASSWORD:-changeme_strong_password}@postgres:5432/${POSTGRES_DB:-fraud_detection}
+      --backend-store-uri sqlite:////mlflow/mlflow.db
       --default-artifact-root /mlflow/artifacts
       --host 0.0.0.0
       --port 5000
@@ -504,6 +504,93 @@ services:
         ipv4_address: 172.20.0.51
     profiles:
       - elk
+    logging: *default-logging
+
+  # ===========================================================================
+  # Encryption Service — Vault Transit wrapper, PII encrypt/decrypt, gRPC
+  # ===========================================================================
+  encryption-service:
+    build:
+      context: .
+      dockerfile: services/encryption-service/Dockerfile
+    container_name: fds-encryption-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: encryption-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ENCRYPTION_SERVICE_GRPC_PORT: ${ENCRYPTION_SERVICE_GRPC_PORT:-50066}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
+      VAULT_AUTH_METHOD: ${VAULT_AUTH_METHOD:-token}
+      VAULT_DEFAULT_KEY_NAME: ${VAULT_DEFAULT_KEY_NAME:-fraud-pii-key}
+      VAULT_KEY_ROTATION_PERIOD: ${VAULT_KEY_ROTATION_PERIOD:-2160h}
+      MAX_BATCH_SIZE: ${MAX_BATCH_SIZE:-100}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${ENCRYPTION_SERVICE_GRPC_PORT:-50066}:50066"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.61
+    depends_on:
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/grpc_health_probe", "-addr=:50066"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ===========================================================================
+  # IAM Service — authentication, RBAC, JWT, TOTP MFA
+  # ===========================================================================
+  iam-service:
+    build:
+      context: .
+      dockerfile: services/iam-service/Dockerfile
+    container_name: fds-iam-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: iam-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      IAM_SERVICE_PORT: ${IAM_SERVICE_PORT:-9000}
+      IAM_SERVICE_GRPC_PORT: ${IAM_SERVICE_GRPC_PORT:-50060}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_strong_password}
+      POSTGRES_SSL_MODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme_redis_password}
+      REDIS_DB: 0
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+      JWT_ISSUER: ${JWT_ISSUER:-fraud-detection-system}
+      MFA_ISSUER: ${MFA_ISSUER:-FraudDetectionSystem}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${IAM_SERVICE_GRPC_PORT:-50060}:50060"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.60
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/grpc_health_probe", "-addr=:50060"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     logging: *default-logging
 
   # ===========================================================================

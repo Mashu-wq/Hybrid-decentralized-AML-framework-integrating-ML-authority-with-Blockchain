@@ -43,12 +43,12 @@ start_service "transaction-service" "transaction-service"
 start_service "blockchain-service"  "blockchain-service"
 start_service "alert-service"       "alert-service"
 start_service "case-service"        "case-service"
-# analytics-service has no implementation yet (Phase 12)
+start_service "analytics-service"  "analytics-service"
 
 # Start ML service (Python)
 log_info "Starting ml-service..."
 cd "$REPO_ROOT/services/ml-service"
-poetry run uvicorn main:app --host 0.0.0.0 --port 8000 \
+PYTHONPATH="$REPO_ROOT" poetry run uvicorn main:app --host 0.0.0.0 --port 8000 \
     > "$REPO_ROOT/logs/ml-service.log" 2>&1 &
 PIDS+=($!)
 log_success "ml-service started (PID ${PIDS[-1]})"

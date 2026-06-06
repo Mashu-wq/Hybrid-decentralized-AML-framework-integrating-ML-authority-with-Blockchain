@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,14 @@ type Config struct {
 	OrgName           string
 	Username          string
 	PoolSize          int
+
+	// fabric-gateway connection settings (Fabric 2.4+ Gateway service)
+	MSPID                   string
+	PeerEndpoint            string
+	GatewayHostnameOverride string
+	TLSCertPath             string
+	SignCertPath            string
+	KeystoreDir             string
 
 	KYCChannel     string
 	AlertChannel   string
@@ -64,6 +73,25 @@ func Load() (Config, error) {
 	if cfg.PoolSize < 1 {
 		return Config{}, fmt.Errorf("BLOCKCHAIN_POOL_SIZE must be >= 1")
 	}
+
+	// Derive fabric-gateway settings. Defaults assume the cryptogen layout under
+	// blockchain/network/crypto-config, located relative to the connection profile.
+	orgDomain := getenv("BLOCKCHAIN_ORG_DOMAIN", "org1.fraud-detection.example.com")
+	peerHost := getenv("BLOCKCHAIN_PEER_HOST", "peer0."+orgDomain)
+	peerPort := getenv("BLOCKCHAIN_PEER_PORT", "7051")
+	cryptoBase := getenv("BLOCKCHAIN_CRYPTO_CONFIG", filepath.Join(filepath.Dir(cfg.ConnectionProfile), "..", "crypto-config"))
+	adminUser := "Admin@" + orgDomain
+	userMSP := filepath.Join(cryptoBase, "peerOrganizations", orgDomain, "users", adminUser, "msp")
+
+	cfg.MSPID = getenv("BLOCKCHAIN_MSP_ID", "Org1MSP")
+	cfg.PeerEndpoint = getenv("BLOCKCHAIN_PEER_ENDPOINT", peerHost+":"+peerPort)
+	cfg.GatewayHostnameOverride = getenv("BLOCKCHAIN_GATEWAY_HOSTNAME_OVERRIDE", peerHost)
+	cfg.TLSCertPath = getenv("BLOCKCHAIN_TLS_CERT_PATH",
+		filepath.Join(cryptoBase, "peerOrganizations", orgDomain, "peers", peerHost, "tls", "ca.crt"))
+	cfg.SignCertPath = getenv("BLOCKCHAIN_MSP_SIGNCERT",
+		filepath.Join(userMSP, "signcerts", adminUser+"-cert.pem"))
+	cfg.KeystoreDir = getenv("BLOCKCHAIN_MSP_KEYSTORE", filepath.Join(userMSP, "keystore"))
+
 	return cfg, nil
 }
 

@@ -40,7 +40,8 @@ func run() error {
 
 	gateway, err := appfabric.New(cfg, publisher, log)
 	if err != nil {
-		return fmt.Errorf("create fabric gateway: %w", err)
+		log.Warn().Err(err).Msg("fabric network unavailable — starting in degraded mode (health endpoint active, ledger ops will fail)")
+		gateway = appfabric.NewUnavailable(err.Error())
 	}
 	defer gateway.Close()
 
@@ -48,7 +49,7 @@ func run() error {
 	defer stop()
 
 	if err := gateway.StartEventListeners(ctx); err != nil {
-		return fmt.Errorf("start event listeners: %w", err)
+		log.Warn().Err(err).Msg("event listeners failed to start")
 	}
 
 	svc := appservice.New(cfg, gateway)

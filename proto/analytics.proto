@@ -1,0 +1,251 @@
+syntax = "proto3";
+
+package fraud.analytics.v1;
+
+option go_package = "github.com/fraud-detection/proto/gen/go/analytics/v1;analyticsv1";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+
+// =============================================================================
+// ANALYTICS SERVICE — Reports, metrics aggregation, trend analysis.
+// Reads from PostgreSQL (fraud_alerts) and MongoDB (enriched_transactions).
+// =============================================================================
+
+service AnalyticsService {
+  // Fraud trend time-series (alert counts, probabilities by time bucket).
+  rpc GetFraudTrends            (GetFraudTrendsRequest)            returns (GetFraudTrendsResponse);
+
+  // Risk level distribution breakdown for a period.
+  rpc GetRiskDistribution       (GetRiskDistributionRequest)       returns (GetRiskDistributionResponse);
+
+  // Ranked list of highest-risk customers.
+  rpc GetTopRiskyCustomers      (GetTopRiskyCustomersRequest)      returns (GetTopRiskyCustomersResponse);
+
+  // Model precision/recall/F1 performance by version.
+  rpc GetModelPerformance       (GetModelPerformanceRequest)       returns (GetModelPerformanceResponse);
+
+  // Transaction volume time-series (counts and amounts).
+  rpc GetTransactionVolume      (GetTransactionVolumeRequest)      returns (GetTransactionVolumeResponse);
+
+  // Alert lifecycle metrics (resolution time, FPR, escalation rate).
+  rpc GetAlertMetrics           (GetAlertMetricsRequest)           returns (GetAlertMetricsResponse);
+
+  // Geographic fraud distribution by country.
+  rpc GetGeographicDistribution (GetGeographicDistributionRequest) returns (GetGeographicDistributionResponse);
+
+  // Generate a structured compliance or SAR report.
+  rpc GenerateReport            (GenerateReportRequest)            returns (GenerateReportResponse);
+
+  // --- Health ---
+  rpc HealthCheck (fraud.common.v1.HealthCheckRequest) returns (fraud.common.v1.HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Common
+// ---------------------------------------------------------------------------
+
+enum Granularity {
+  GRANULARITY_UNSPECIFIED = 0;
+  GRANULARITY_HOUR        = 1;
+  GRANULARITY_DAY         = 2;
+  GRANULARITY_WEEK        = 3;
+  GRANULARITY_MONTH       = 4;
+}
+
+// ---------------------------------------------------------------------------
+// GetFraudTrends
+// ---------------------------------------------------------------------------
+
+message GetFraudTrendsRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  google.protobuf.Timestamp       start_time  = 2;
+  google.protobuf.Timestamp       end_time    = 3;
+  Granularity                     granularity = 4;
+}
+
+message TrendPoint {
+  google.protobuf.Timestamp date          = 1;
+  int32                     alert_count   = 2;  // total alerts in bucket
+  int32                     fraud_count   = 3;  // HIGH + CRITICAL alerts
+  int32                     total_tx_count = 4; // from MongoDB (0 if unavailable)
+  double                    fraud_rate    = 5;  // fraud_count / total_tx_count
+  double                    avg_fraud_prob = 6;
+}
+
+message GetFraudTrendsResponse {
+  repeated TrendPoint points      = 1;
+  string              period      = 2;
+  Granularity         granularity = 3;
+}
+
+// ---------------------------------------------------------------------------
+// GetRiskDistribution
+// ---------------------------------------------------------------------------
+
+message GetRiskDistributionRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;  // "24h", "7d", "30d"
+}
+
+message RiskBucket {
+  string risk_level    = 1;  // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+  int32  count         = 2;
+  double percentage    = 3;
+  double avg_fraud_prob = 4;
+}
+
+message GetRiskDistributionResponse {
+  repeated RiskBucket buckets = 1;
+  int32               total   = 2;
+  string              period  = 3;
+}
+
+// ---------------------------------------------------------------------------
+// GetTopRiskyCustomers
+// ---------------------------------------------------------------------------
+
+message GetTopRiskyCustomersRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;
+  int32                           limit  = 3;  // default 10, max 100
+}
+
+message RiskyCustomer {
+  string                    customer_id    = 1;
+  int32                     alert_count    = 2;
+  double                    fraud_rate     = 3;  // fraction of HIGH+CRITICAL
+  double                    total_amount   = 4;  // sum of tx amounts (from MongoDB)
+  double                    avg_risk_score = 5;
+  google.protobuf.Timestamp last_alert_at  = 6;
+}
+
+message GetTopRiskyCustomersResponse {
+  repeated RiskyCustomer customers = 1;
+  string                 period    = 2;
+}
+
+// ---------------------------------------------------------------------------
+// GetModelPerformance
+// ---------------------------------------------------------------------------
+
+message GetModelPerformanceRequest {
+  fraud.common.v1.RequestMetadata meta          = 1;
+  string                          model_version = 2;  // empty = latest
+  string                          period        = 3;
+}
+
+message ModelPerformance {
+  string model_version      = 1;
+  string period             = 2;
+  int64  total_predictions  = 3;
+  int64  true_positives     = 4;  // status = RESOLVED (confirmed fraud)
+  int64  false_positives    = 5;  // status = FALSE_POSITIVE
+  int64  true_negatives     = 6;  // not directly observable; 0 unless known
+  int64  false_negatives    = 7;  // not directly observable; 0 unless known
+  double precision          = 8;  // TP / (TP + FP)
+  double recall             = 9;  // approximate
+  double f1_score           = 10;
+  double auc_roc            = 11; // approximation from probability distribution
+}
+
+message GetModelPerformanceResponse {
+  ModelPerformance performance = 1;
+}
+
+// ---------------------------------------------------------------------------
+// GetTransactionVolume
+// ---------------------------------------------------------------------------
+
+message GetTransactionVolumeRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  google.protobuf.Timestamp       start_time  = 2;
+  google.protobuf.Timestamp       end_time    = 3;
+  Granularity                     granularity = 4;
+}
+
+message VolumePoint {
+  google.protobuf.Timestamp date         = 1;
+  int32                     tx_count     = 2;
+  double                    total_amount = 3;
+  double                    avg_amount   = 4;
+  int32                     fraud_count  = 5;  // alert_created = true
+}
+
+message GetTransactionVolumeResponse {
+  repeated VolumePoint points = 1;
+}
+
+// ---------------------------------------------------------------------------
+// GetAlertMetrics
+// ---------------------------------------------------------------------------
+
+message GetAlertMetricsRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;
+}
+
+message AlertMetrics {
+  string              period              = 1;
+  int32               total_alerts        = 2;
+  int32               open_alerts         = 3;
+  int32               resolved_alerts     = 4;
+  int32               false_positives     = 5;
+  int32               escalated_alerts    = 6;
+  double              avg_resolution_min  = 7;
+  double              escalation_rate     = 8;
+  double              false_positive_rate = 9;
+  map<string, int32>  by_priority         = 10;
+}
+
+message GetAlertMetricsResponse {
+  AlertMetrics metrics = 1;
+}
+
+// ---------------------------------------------------------------------------
+// GetGeographicDistribution
+// ---------------------------------------------------------------------------
+
+message GetGeographicDistributionRequest {
+  fraud.common.v1.RequestMetadata meta   = 1;
+  string                          period = 2;
+}
+
+message GeoFraudPoint {
+  string country_code = 1;
+  int32  alert_count  = 2;
+  int32  tx_count     = 3;
+  double fraud_rate   = 4;
+  double total_amount = 5;
+}
+
+message GetGeographicDistributionResponse {
+  repeated GeoFraudPoint points = 1;
+  string                 period = 2;
+}
+
+// ---------------------------------------------------------------------------
+// GenerateReport
+// ---------------------------------------------------------------------------
+
+enum ReportType {
+  REPORT_TYPE_UNSPECIFIED  = 0;
+  REPORT_TYPE_SUMMARY      = 1;  // executive summary
+  REPORT_TYPE_COMPLIANCE   = 2;  // detailed compliance report
+  REPORT_TYPE_SAR          = 3;  // Suspicious Activity Report summary
+  REPORT_TYPE_MODEL_AUDIT  = 4;  // ML model performance audit
+}
+
+message GenerateReportRequest {
+  fraud.common.v1.RequestMetadata meta        = 1;
+  ReportType                      report_type = 2;
+  string                          period      = 3;  // "24h", "7d", "30d"
+}
+
+message GenerateReportResponse {
+  string                    report_id    = 1;
+  ReportType                report_type  = 2;
+  string                    period       = 3;
+  google.protobuf.Timestamp generated_at = 4;
+  string                    content_json = 5;  // structured JSON report body
+}

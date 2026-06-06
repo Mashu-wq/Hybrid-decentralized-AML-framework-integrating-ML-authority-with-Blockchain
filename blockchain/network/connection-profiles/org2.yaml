@@ -5,7 +5,7 @@ client:
 organizations:
   Org2:
     mspid: Org2MSP
-    cryptoPath: ../crypto-config/peerOrganizations/org2.fraud-detection.example.com/users/{username}@org2.fraud-detection.example.com/msp
+    cryptoPath: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org2.fraud-detection.example.com/users/{username}@org2.fraud-detection.example.com/msp
     peers:
       - peer0.org2.fraud-detection.example.com
       - peer1.org2.fraud-detection.example.com

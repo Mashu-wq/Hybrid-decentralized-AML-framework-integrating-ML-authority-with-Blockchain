@@ -4,8 +4,17 @@ OrdererOrgs:
     EnableNodeOUs: true
     Specs:
       - Hostname: orderer0
+        SANS:
+          - localhost
+          - 127.0.0.1
       - Hostname: orderer1
+        SANS:
+          - localhost
+          - 127.0.0.1
       - Hostname: orderer2
+        SANS:
+          - localhost
+          - 127.0.0.1
 
 PeerOrgs:
   - Name: Org1
@@ -13,6 +22,9 @@ PeerOrgs:
     EnableNodeOUs: true
     Template:
       Count: 2
+      SANS:
+        - localhost
+        - 127.0.0.1
     Users:
       Count: 1
 
@@ -21,6 +33,9 @@ PeerOrgs:
     EnableNodeOUs: true
     Template:
       Count: 2
+      SANS:
+        - localhost
+        - 127.0.0.1
     Users:
       Count: 1
 
@@ -29,5 +44,8 @@ PeerOrgs:
     EnableNodeOUs: true
     Template:
       Count: 2
+      SANS:
+        - localhost
+        - 127.0.0.1
     Users:
       Count: 1

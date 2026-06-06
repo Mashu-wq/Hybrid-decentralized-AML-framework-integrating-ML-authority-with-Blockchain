@@ -17,6 +17,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const dlqTopic = "transactions.dlq"
+
 // MessageProcessor defines the processing function called for each raw transaction.
 // Implementations must be safe for concurrent use from multiple goroutines.
 type MessageProcessor func(ctx context.Context, raw *domain.RawTransaction) error
@@ -25,6 +27,7 @@ type MessageProcessor func(ctx context.Context, raw *domain.RawTransaction) erro
 // a pool of workers for parallel processing.
 type Consumer struct {
 	reader    *kafka.Reader
+	dlq       *kafka.Writer
 	processor MessageProcessor
 	workers   int
 	log       zerolog.Logger
@@ -62,8 +65,16 @@ func NewConsumer(
 
 	reader := kafka.NewReader(readerCfg)
 
+	dlqWriter := &kafka.Writer{
+		Addr:         kafka.TCP(brokers...),
+		Topic:        dlqTopic,
+		Balancer:     &kafka.LeastBytes{},
+		RequiredAcks: kafka.RequireOne,
+	}
+
 	return &Consumer{
 		reader:    reader,
+		dlq:       dlqWriter,
 		processor: processor,
 		workers:   workers,
 		log:       log.With().Str("component", "kafka_consumer").Str("topic", topic).Logger(),
@@ -149,11 +160,21 @@ func (c *Consumer) processMessage(ctx context.Context, log zerolog.Logger, msg k
 		log.Error().
 			Err(err).
 			Str("raw_value", truncate(string(msg.Value), 200)).
-			Msg("failed to deserialise transaction message; skipping (DLQ TODO)")
-		// TODO: Publish to dead-letter queue instead of silently dropping.
-		// Commit offset so we don't block the partition on a permanently bad message.
+			Msg("failed to deserialise transaction message; routing to DLQ")
+		dlqCtx, dlqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dlqCancel()
+		if dlqErr := c.dlq.WriteMessages(dlqCtx, kafka.Message{
+			Key:   msg.Key,
+			Value: msg.Value,
+			Headers: append(msg.Headers,
+				kafka.Header{Key: "x-dlq-reason", Value: []byte(err.Error())},
+				kafka.Header{Key: "x-source-topic", Value: []byte(msg.Topic)},
+			),
+		}); dlqErr != nil {
+			log.Warn().Err(dlqErr).Msg("failed to write to DLQ")
+		}
 		if err := c.reader.CommitMessages(ctx, msg); err != nil {
-			log.Warn().Err(err).Msg("failed to commit DLQ offset")
+			log.Warn().Err(err).Msg("failed to commit offset after DLQ write")
 		}
 		return
 	}
@@ -184,8 +205,11 @@ func (c *Consumer) processMessage(ctx context.Context, log zerolog.Logger, msg k
 		Msg("transaction processed and committed")
 }
 
-// Close shuts down the consumer reader.
+// Close shuts down the consumer reader and DLQ writer.
 func (c *Consumer) Close() error {
+	if err := c.dlq.Close(); err != nil {
+		return fmt.Errorf("close kafka dlq writer: %w", err)
+	}
 	if err := c.reader.Close(); err != nil {
 		return fmt.Errorf("close kafka reader: %w", err)
 	}

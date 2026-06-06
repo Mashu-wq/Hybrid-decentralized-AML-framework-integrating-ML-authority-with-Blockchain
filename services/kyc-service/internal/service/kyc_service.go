@@ -12,7 +12,6 @@ import (
 	"github.com/fraud-detection/kyc-service/internal/clients"
 	"github.com/fraud-detection/kyc-service/internal/config"
 	"github.com/fraud-detection/kyc-service/internal/domain"
-	"github.com/fraud-detection/kyc-service/internal/textract"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
@@ -66,8 +65,6 @@ type KYCService struct {
 	repo       KYCRepository
 	enc        PIIEncryptor
 	blockchain clients.BlockchainClient
-	faceMatch  clients.FaceMatchClient
-	ocr        textract.OCRClient
 	producer   KYCEventPublisher
 	log        zerolog.Logger
 	cfg        *config.Config
@@ -78,8 +75,6 @@ func NewKYCService(
 	repo KYCRepository,
 	enc PIIEncryptor,
 	blockchain clients.BlockchainClient,
-	faceMatch clients.FaceMatchClient,
-	ocr textract.OCRClient,
 	producer KYCEventPublisher,
 	log zerolog.Logger,
 	cfg *config.Config,
@@ -88,8 +83,6 @@ func NewKYCService(
 		repo:       repo,
 		enc:        enc,
 		blockchain: blockchain,
-		faceMatch:  faceMatch,
-		ocr:        ocr,
 		producer:   producer,
 		log:        log.With().Str("component", "kyc_service").Logger(),
 		cfg:        cfg,
@@ -278,21 +271,17 @@ type SubmitDocumentInput struct {
 	IsFront      bool
 }
 
-// SubmitDocument processes a customer identity document image via OCR:
+// SubmitDocument records a customer identity document:
 //  1. Verifies the customer exists.
-//  2. Creates a document record in PROCESSING state.
-//  3. Calls the OCR client (with 30-second timeout).
-//  4. Updates the document with OCR results.
-//  5. Updates the customer's OCR confidence if extraction succeeded.
-//  6. Logs an audit event.
+//  2. Creates a document record and marks it COMPLETED.
+//  3. Logs an audit event.
 func (s *KYCService) SubmitDocument(ctx context.Context, in *SubmitDocumentInput) (*domain.Document, error) {
 	// 1. Verify customer exists.
-	customer, err := s.repo.GetCustomerByID(ctx, in.CustomerID)
-	if err != nil {
+	if _, err := s.repo.GetCustomerByID(ctx, in.CustomerID); err != nil {
 		return nil, fmt.Errorf("get customer: %w", err)
 	}
 
-	// 2. Create document in PROCESSING state.
+	// 2. Create document record and mark it completed immediately.
 	doc := &domain.Document{
 		ID:           uuid.New().String(),
 		CustomerID:   in.CustomerID,
@@ -300,167 +289,31 @@ func (s *KYCService) SubmitDocument(ctx context.Context, in *SubmitDocumentInput
 		S3Key:        in.S3Key,
 		ContentType:  in.ContentType,
 		IsFront:      in.IsFront,
-		Status:       "PROCESSING",
+		Status:       "COMPLETED",
 	}
 
 	if err := s.repo.CreateDocument(ctx, doc); err != nil {
 		return nil, fmt.Errorf("create document: %w", err)
 	}
 
+	// 3. Audit log.
+	s.logAudit(ctx, &domain.AuditEvent{
+		CustomerID: in.CustomerID,
+		EventType:  "DOCUMENT_SUBMITTED",
+		Metadata: map[string]string{
+			"document_id":   doc.ID,
+			"document_type": in.DocumentType,
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+
 	s.log.Info().
 		Str("customer_id", in.CustomerID).
 		Str("document_id", doc.ID).
 		Str("document_type", in.DocumentType).
-		Msg("document submitted, starting OCR")
-
-	// 3. OCR with 30-second timeout.
-	ocrCtx, ocrCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer ocrCancel()
-
-	ocrResult, err := s.ocr.ExtractDocument(ocrCtx, in.S3Key, s.cfg.TextractBucket, in.DocumentType)
-	if err != nil {
-		// OCR failure — update document to FAILED, return partial result.
-		s.log.Error().Err(err).
-			Str("document_id", doc.ID).
-			Msg("OCR extraction failed")
-
-		doc.Status = "FAILED"
-		doc.OCRCompleted = true
-		doc.OCRResult = &domain.OCRResult{
-			Success:  false,
-			Warnings: []string{fmt.Sprintf("OCR failed: %v", err)},
-		}
-		if updateErr := s.repo.UpdateDocument(ctx, doc); updateErr != nil {
-			s.log.Error().Err(updateErr).Str("document_id", doc.ID).Msg("failed to update document status after OCR failure")
-		}
-		return doc, nil
-	}
-
-	if enrichErr := s.enrichOCRResult(ctx, in.CustomerID, ocrResult); enrichErr != nil {
-		s.log.Warn().
-			Err(enrichErr).
-			Str("customer_id", in.CustomerID).
-			Str("document_id", doc.ID).
-			Msg("failed to enrich OCR result with registered customer data")
-	}
-
-	// 4. Update document with OCR results.
-	doc.OCRCompleted = true
-	doc.OCRConfidence = ocrResult.Confidence
-	doc.OCRResult = ocrResult
-	doc.Status = "COMPLETED"
-
-	persistedDoc := *doc
-	persistedDoc.OCRResult = redactOCRResult(ocrResult)
-	if err := s.repo.UpdateDocument(ctx, &persistedDoc); err != nil {
-		return nil, fmt.Errorf("update document after OCR: %w", err)
-	}
-
-	// 5. Update customer OCR confidence if above threshold.
-	if ocrResult.Success && ocrResult.Confidence >= s.cfg.OCRConfidenceThreshold {
-		customer.OCRConfidence = ocrResult.Confidence
-		if err := s.repo.UpdateCustomer(ctx, customer); err != nil {
-			s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("failed to update customer OCR confidence (non-fatal)")
-		}
-	} else {
-		s.log.Warn().
-			Str("document_id", doc.ID).
-			Float64("confidence", ocrResult.Confidence).
-			Float64("threshold", s.cfg.OCRConfidenceThreshold).
-			Msg("OCR confidence below threshold")
-	}
-
-	// 6. Audit log.
-	s.logAudit(ctx, &domain.AuditEvent{
-		CustomerID: in.CustomerID,
-		EventType:  "DOCUMENT_SUBMITTED",
-		ActorID:    "",
-		Reason:     fmt.Sprintf("document type: %s, ocr_confidence: %.2f", in.DocumentType, ocrResult.Confidence),
-		Metadata: map[string]string{
-			"document_id":   doc.ID,
-			"document_type": in.DocumentType,
-			"ocr_success":   fmt.Sprintf("%t", ocrResult.Success),
-		},
-		CreatedAt: time.Now().UTC(),
-	})
-
-	s.log.Info().
-		Str("customer_id", in.CustomerID).
-		Str("document_id", doc.ID).
-		Float64("ocr_confidence", ocrResult.Confidence).
-		Bool("ocr_success", ocrResult.Success).
-		Msg("OCR completed")
+		Msg("document submitted")
 
 	return doc, nil
-}
-
-// ---------------------------------------------------------------------------
-// VerifyFace
-// ---------------------------------------------------------------------------
-
-// VerifyFaceInput carries the parameters for a face verification request.
-type VerifyFaceInput struct {
-	CustomerID    string
-	SelfieS3Key   string
-	DocumentS3Key string
-	CheckLiveness bool
-	ActorID       string
-}
-
-// VerifyFace performs biometric liveness and face-match verification:
-//  1. Verifies the customer exists and has completed OCR.
-//  2. Calls the FaceMatchClient.
-//  3. Updates the customer record with match score and liveness flag.
-//  4. Logs an audit event.
-func (s *KYCService) VerifyFace(ctx context.Context, in *VerifyFaceInput) (*domain.FaceVerifyResult, error) {
-	// 1. Verify customer exists.
-	customer, err := s.repo.GetCustomerByID(ctx, in.CustomerID)
-	if err != nil {
-		return nil, fmt.Errorf("get customer: %w", err)
-	}
-
-	// Warn if OCR hasn't been completed yet (not a hard block).
-	if !customer.LivenessPassed && customer.OCRConfidence == 0 {
-		s.log.Warn().
-			Str("customer_id", in.CustomerID).
-			Msg("face verification requested before OCR completion")
-	}
-
-	// 2. Call face match client.
-	result, err := s.faceMatch.MatchFaces(ctx, in.SelfieS3Key, in.DocumentS3Key, in.CheckLiveness)
-	if err != nil {
-		return nil, fmt.Errorf("face match: %w", err)
-	}
-
-	// 3. Update customer.
-	customer.FaceMatchScore = result.MatchScore
-	customer.LivenessPassed = result.LivenessPassed
-	if err := s.repo.UpdateCustomer(ctx, customer); err != nil {
-		return nil, fmt.Errorf("update customer after face verify: %w", err)
-	}
-
-	// 4. Audit log.
-	s.logAudit(ctx, &domain.AuditEvent{
-		CustomerID: in.CustomerID,
-		EventType:  "FACE_VERIFIED",
-		ActorID:    in.ActorID,
-		Reason:     fmt.Sprintf("face_match=%t, liveness=%t", result.FaceMatch, result.LivenessPassed),
-		Metadata: map[string]string{
-			"match_score":    fmt.Sprintf("%.4f", result.MatchScore),
-			"liveness_score": fmt.Sprintf("%.4f", result.LivenessScore),
-			"model_version":  result.ModelVersion,
-		},
-		CreatedAt: time.Now().UTC(),
-	})
-
-	s.log.Info().
-		Str("customer_id", in.CustomerID).
-		Bool("face_match", result.FaceMatch).
-		Float64("match_score", result.MatchScore).
-		Bool("liveness_passed", result.LivenessPassed).
-		Msg("face verification completed")
-
-	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -700,65 +553,6 @@ func (s *KYCService) GetCustomerRiskLevel(ctx context.Context, customerID string
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-// validateStatusTransition enforces the KYC lifecycle state machine.
-// Valid transitions: PENDING → APPROVED/REJECTED, APPROVED → SUSPENDED, SUSPENDED → APPROVED.
-func (s *KYCService) enrichOCRResult(ctx context.Context, customerID string, ocrResult *domain.OCRResult) error {
-	if ocrResult == nil {
-		return nil
-	}
-
-	encPII, err := s.repo.GetEncryptedPII(ctx, customerID)
-	if err != nil {
-		return fmt.Errorf("get encrypted PII: %w", err)
-	}
-
-	decrypted, err := s.enc.BatchDecryptPII(ctx, customerID, map[string]string{
-		"full_name":       encPII.FullNameEnc,
-		"document_number": encPII.DocumentNumberEnc,
-		"expiry_date":     encPII.ExpiryDateEnc,
-	})
-	if err != nil {
-		return fmt.Errorf("decrypt PII for OCR enrichment: %w", err)
-	}
-
-	registeredName := normalizePIIString(string(decrypted["full_name"]))
-	extractedName := normalizePIIString(ocrResult.ExtractedName)
-	if registeredName != "" && extractedName != "" {
-		ocrResult.NameMatch = registeredName == extractedName
-		if !ocrResult.NameMatch {
-			ocrResult.Warnings = append(ocrResult.Warnings, "document name does not match registered customer profile")
-		}
-	}
-
-	registeredDocNo := normalizePIIString(string(decrypted["document_number"]))
-	extractedDocNo := normalizePIIString(ocrResult.ExtractedDocNo)
-	if registeredDocNo != "" && extractedDocNo != "" && registeredDocNo != extractedDocNo {
-		ocrResult.Warnings = append(ocrResult.Warnings, "document number does not match registered profile")
-	}
-
-	registeredExpiry := normalizePIIString(string(decrypted["expiry_date"]))
-	extractedExpiry := normalizePIIString(ocrResult.ExtractedExpiry)
-	if registeredExpiry != "" && extractedExpiry != "" && registeredExpiry != extractedExpiry {
-		ocrResult.Warnings = append(ocrResult.Warnings, "document expiry does not match registered profile")
-	}
-
-	return nil
-}
-
-func redactOCRResult(ocr *domain.OCRResult) *domain.OCRResult {
-	if ocr == nil {
-		return nil
-	}
-
-	return &domain.OCRResult{
-		Success:     ocr.Success,
-		Confidence:  ocr.Confidence,
-		ExpiryValid: ocr.ExpiryValid,
-		NameMatch:   ocr.NameMatch,
-		Warnings:    append([]string(nil), ocr.Warnings...),
-	}
-}
 
 func normalizePIIString(value string) string {
 	upper := strings.ToUpper(strings.TrimSpace(value))

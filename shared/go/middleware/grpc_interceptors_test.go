@@ -75,8 +75,7 @@ func TestLoggingInterceptor_InjectsRequestID(t *testing.T) {
 	))
 
 	_, _ = interceptor(ctx, nil, unaryInfo("/test.Service/Log"), handler)
-	// Request ID should be propagated from metadata into context
-	// (via MetadataPropagator — logging interceptor reads from context)
+	assert.NotNil(t, capturedCtx)
 }
 
 func TestMetadataPropagatorInterceptor_ExtractsRequestID(t *testing.T) {

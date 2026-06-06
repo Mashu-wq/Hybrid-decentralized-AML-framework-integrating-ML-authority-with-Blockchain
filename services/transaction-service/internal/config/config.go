@@ -49,6 +49,9 @@ type Config struct {
 	VelocityAlert1HLimit int     // alert if tx count in 1h exceeds this (default 20)
 	VelocityAlert24HLimit int    // alert if tx count in 24h exceeds this (default 100)
 
+	// --- HTTP health server ---
+	HTTPPort int
+
 	// --- Observability ---
 	JaegerEndpoint string
 	JWTSecret      string // shared HMAC secret for inter-service auth
@@ -90,6 +93,7 @@ func Load() (*Config, error) {
 		VelocityAlert1HLimit:  envInt("VELOCITY_ALERT_1H_LIMIT", 20),
 		VelocityAlert24HLimit: envInt("VELOCITY_ALERT_24H_LIMIT", 100),
 
+		HTTPPort:        envInt("TX_SERVICE_PORT", 9002),
 		JaegerEndpoint:  env("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"),
 		JWTSecret:       envRequired("INTERNAL_JWT_SECRET"),
 		PipelineVersion: env("PIPELINE_VERSION", "1.0.0"),

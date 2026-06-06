@@ -61,8 +61,6 @@ func (h *Handler) IngestTransaction(ctx context.Context, req *transactionv1.Inge
 	raw := protoToRaw(req.Transaction)
 
 	if !req.Sync {
-		// Async path: queue and return immediately.
-		// TODO: push to an internal channel or Kafka for processing; for now we process inline.
 		go func() {
 			bgCtx := context.Background()
 			if _, err := h.svc.ProcessTransaction(bgCtx, raw); err != nil {

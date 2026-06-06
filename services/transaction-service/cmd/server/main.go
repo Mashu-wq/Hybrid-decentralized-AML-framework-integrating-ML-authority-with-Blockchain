@@ -27,6 +27,7 @@ import (
 	"github.com/fraud-detection/transaction-service/internal/domain"
 	"github.com/fraud-detection/transaction-service/internal/features"
 	grpcserver "github.com/fraud-detection/transaction-service/internal/grpc"
+	txhttp "github.com/fraud-detection/transaction-service/internal/http"
 	txkafka "github.com/fraud-detection/transaction-service/internal/kafka"
 	mongorepo "github.com/fraud-detection/transaction-service/internal/repository/mongo"
 	redisrepo "github.com/fraud-detection/transaction-service/internal/repository/redis"
@@ -204,9 +205,10 @@ func run() error {
 	)
 
 	// -------------------------------------------------------------------------
-	// 10. gRPC server
+	// 10. gRPC server + HTTP health server
 	// -------------------------------------------------------------------------
 	grpcSrv := grpcserver.New(txService, log, cfg.JWTSecret)
+	httpSrv := txhttp.New(log, cfg.HTTPPort)
 
 	// -------------------------------------------------------------------------
 	// 11. Graceful shutdown orchestration
@@ -214,7 +216,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 
 	go func() {
 		log.Info().
@@ -233,8 +235,15 @@ func run() error {
 		}
 	}()
 
+	go func() {
+		if err := httpSrv.Run(ctx); err != nil {
+			errCh <- fmt.Errorf("http server: %w", err)
+		}
+	}()
+
 	log.Info().
 		Int("grpc_port", cfg.GRPCPort).
+		Int("http_port", cfg.HTTPPort).
 		Float64("alert_threshold", cfg.FraudAlertThreshold).
 		Msg("transaction-service ready")
 

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS iam.users (
     role_id           UUID        NOT NULL REFERENCES iam.roles(id),
     mfa_enabled       BOOLEAN     NOT NULL DEFAULT FALSE,
     mfa_secret        TEXT,                          -- TOTP secret (encrypted at app layer)
-    mfa_backup_codes  TEXT[],                        -- hashed backup codes
+    mfa_backup_codes  JSONB       DEFAULT '[]'::JSONB, -- bcrypt-hashed backup codes (JSON array)
     active            BOOLEAN     NOT NULL DEFAULT TRUE,
     failed_attempts   INT         NOT NULL DEFAULT 0,
     locked_until      TIMESTAMPTZ,

@@ -107,32 +107,9 @@ func (h *KYCHandler) SubmitDocument(ctx context.Context, req *kycv1.SubmitDocume
 	return resp, nil
 }
 
-// VerifyFace performs biometric liveness and face-match checks.
-func (h *KYCHandler) VerifyFace(ctx context.Context, req *kycv1.VerifyFaceRequest) (*kycv1.VerifyFaceResponse, error) {
-	if req.CustomerId == "" || req.SelfieS3Key == "" || req.DocumentS3Key == "" {
-		return nil, status.Error(codes.InvalidArgument, "customer_id, selfie_s3_key, and document_s3_key are required")
-	}
-
-	in := &service.VerifyFaceInput{
-		CustomerID:    req.CustomerId,
-		SelfieS3Key:   req.SelfieS3Key,
-		DocumentS3Key: req.DocumentS3Key,
-		CheckLiveness: req.CheckLiveness,
-	}
-
-	result, err := h.kycSvc.VerifyFace(ctx, in)
-	if err != nil {
-		return nil, mapKYCError(err)
-	}
-
-	return &kycv1.VerifyFaceResponse{
-		FaceMatch:      result.FaceMatch,
-		MatchScore:     result.MatchScore,
-		LivenessPassed: result.LivenessPassed,
-		LivenessScore:  result.LivenessScore,
-		ModelVersion:   result.ModelVersion,
-		FailureReason:  result.FailureReason,
-	}, nil
+// VerifyFace is not configured in this deployment.
+func (h *KYCHandler) VerifyFace(_ context.Context, _ *kycv1.VerifyFaceRequest) (*kycv1.VerifyFaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "face verification is not configured")
 }
 
 // UpdateKYCStatus changes the KYC status of a customer.

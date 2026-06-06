@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/fraud-detection/kyc-service/internal/clients"
 	"github.com/fraud-detection/kyc-service/internal/config"
 	kycgrpc "github.com/fraud-detection/kyc-service/internal/grpc"
@@ -20,7 +19,6 @@ import (
 	"github.com/fraud-detection/kyc-service/internal/repository/postgres"
 	"github.com/fraud-detection/kyc-service/internal/service"
 	"github.com/fraud-detection/kyc-service/internal/storage"
-	"github.com/fraud-detection/kyc-service/internal/textract"
 	"github.com/fraud-detection/shared/logger"
 	"github.com/fraud-detection/shared/tracing"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -110,50 +108,8 @@ func run() error {
 	// -------------------------------------------------------------------------
 	// Blockchain client
 	// -------------------------------------------------------------------------
-	var blockchainClient clients.BlockchainClient
-	if cfg.UseStubBlockchain {
-		blockchainClient = clients.NewStubBlockchainClient(log)
-		log.Info().Msg("using stub blockchain client")
-	} else {
-		blockchainClient = clients.NewRemoteBlockchainClient(cfg.BlockchainServiceAddr, log)
-		log.Info().Str("addr", cfg.BlockchainServiceAddr).Msg("remote blockchain client ready")
-	}
-
-	// -------------------------------------------------------------------------
-	// Face match client
-	// -------------------------------------------------------------------------
-	var faceMatchClient clients.FaceMatchClient
-	if cfg.UseMockFaceMatch {
-		faceMatchClient = clients.NewMockFaceMatchClient(cfg.FaceMatchThreshold, log)
-		log.Info().Msg("using mock face match client")
-	} else {
-		faceMatchClient, err = clients.NewMLFaceMatchClient(cfg.MLServiceAddr, log)
-		if err != nil {
-			return fmt.Errorf("connect to ML service for face matching: %w", err)
-		}
-		log.Info().Str("addr", cfg.MLServiceAddr).Msg("ML face match client ready")
-	}
-
-	// -------------------------------------------------------------------------
-	// OCR client (real AWS Textract or mock based on config)
-	// -------------------------------------------------------------------------
-	var ocrClient textract.OCRClient
-	if cfg.UseMockTextract {
-		ocrClient = &textract.MockOCRClient{}
-		log.Info().Msg("using mock Textract OCR client (development mode)")
-	} else {
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(cfg.AWSRegion),
-		)
-		if err != nil {
-			return fmt.Errorf("load AWS config: %w", err)
-		}
-		ocrClient = textract.NewTextractClient(awsCfg, cfg.TextractBucket)
-		log.Info().
-			Str("region", cfg.AWSRegion).
-			Str("bucket", cfg.TextractBucket).
-			Msg("AWS Textract client ready")
-	}
+	blockchainClient := clients.NewRemoteBlockchainClient(cfg.BlockchainServiceAddr, log)
+	log.Info().Str("addr", cfg.BlockchainServiceAddr).Msg("blockchain client ready")
 
 	// -------------------------------------------------------------------------
 	// Kafka event producer
@@ -179,8 +135,6 @@ func run() error {
 		kycRepo,
 		encClient,
 		blockchainClient,
-		faceMatchClient,
-		ocrClient,
 		eventProducer,
 		log,
 		cfg,

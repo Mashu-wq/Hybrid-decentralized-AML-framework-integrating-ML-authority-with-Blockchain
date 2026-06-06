@@ -9,24 +9,42 @@ client:
         eventHub: 300
         eventReg: 300
       orderer: 300
+  BCCSP:
+    security:
+      enabled: true
+      default:
+        provider: "SW"
+      hashAlgorithm: "SHA2"
+      softVerify: true
+      level: 256
 organizations:
   Org1:
     mspid: Org1MSP
-    cryptoPath: ../crypto-config/peerOrganizations/org1.fraud-detection.example.com/users/{username}@org1.fraud-detection.example.com/msp
+    cryptoPath: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org1.fraud-detection.example.com/users/{username}@org1.fraud-detection.example.com/msp
     peers:
       - peer0.org1.fraud-detection.example.com
       - peer1.org1.fraud-detection.example.com
-    certificateAuthorities: []
+    certificateAuthorities:
+      - ca.org1.fraud-detection.example.com
   Org2:
     mspid: Org2MSP
+    cryptoPath: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org2.fraud-detection.example.com/users/{username}@org2.fraud-detection.example.com/msp
     peers:
       - peer0.org2.fraud-detection.example.com
       - peer1.org2.fraud-detection.example.com
+    certificateAuthorities:
+      - ca.org2.fraud-detection.example.com
   Org3:
     mspid: Org3MSP
+    cryptoPath: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org3.fraud-detection.example.com/users/{username}@org3.fraud-detection.example.com/msp
     peers:
       - peer0.org3.fraud-detection.example.com
       - peer1.org3.fraud-detection.example.com
+    certificateAuthorities:
+      - ca.org3.fraud-detection.example.com
+  OrdererOrg:
+    mspid: OrdererMSP
+    cryptoPath: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/ordererOrganizations/fraud-detection.example.com/users/{username}@fraud-detection.example.com/msp
 orderers:
   orderer0.fraud-detection.example.com:
     url: grpcs://localhost:7050
@@ -34,61 +52,61 @@ orderers:
       ssl-target-name-override: orderer0.fraud-detection.example.com
       hostnameOverride: orderer0.fraud-detection.example.com
     tlsCACerts:
-      path: ../crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer0.fraud-detection.example.com/tls/ca.crt
   orderer1.fraud-detection.example.com:
     url: grpcs://localhost:8050
     grpcOptions:
       ssl-target-name-override: orderer1.fraud-detection.example.com
       hostnameOverride: orderer1.fraud-detection.example.com
     tlsCACerts:
-      path: ../crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer1.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer1.fraud-detection.example.com/tls/ca.crt
   orderer2.fraud-detection.example.com:
     url: grpcs://localhost:9050
     grpcOptions:
       ssl-target-name-override: orderer2.fraud-detection.example.com
       hostnameOverride: orderer2.fraud-detection.example.com
     tlsCACerts:
-      path: ../crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer2.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/ordererOrganizations/fraud-detection.example.com/orderers/orderer2.fraud-detection.example.com/tls/ca.crt
 peers:
   peer0.org1.fraud-detection.example.com:
     url: grpcs://localhost:7051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer0.org1.fraud-detection.example.com
       hostnameOverride: peer0.org1.fraud-detection.example.com
   peer1.org1.fraud-detection.example.com:
     url: grpcs://localhost:8051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer1.org1.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer1.org1.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer1.org1.fraud-detection.example.com
       hostnameOverride: peer1.org1.fraud-detection.example.com
   peer0.org2.fraud-detection.example.com:
     url: grpcs://localhost:9051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer0.org2.fraud-detection.example.com
       hostnameOverride: peer0.org2.fraud-detection.example.com
   peer1.org2.fraud-detection.example.com:
     url: grpcs://localhost:10051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer1.org2.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer1.org2.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer1.org2.fraud-detection.example.com
       hostnameOverride: peer1.org2.fraud-detection.example.com
   peer0.org3.fraud-detection.example.com:
     url: grpcs://localhost:11051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer0.org3.fraud-detection.example.com
       hostnameOverride: peer0.org3.fraud-detection.example.com
   peer1.org3.fraud-detection.example.com:
     url: grpcs://localhost:12051
     tlsCACerts:
-      path: ../crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer1.org3.fraud-detection.example.com/tls/ca.crt
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer1.org3.fraud-detection.example.com/tls/ca.crt
     grpcOptions:
       ssl-target-name-override: peer1.org3.fraud-detection.example.com
       hostnameOverride: peer1.org3.fraud-detection.example.com
@@ -108,3 +126,20 @@ channels:
       peer0.org1.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}
       peer0.org2.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}
       peer0.org3.fraud-detection.example.com: {endorsingPeer: true, chaincodeQuery: true, ledgerQuery: true, eventSource: true}
+
+certificateAuthorities:
+  ca.org1.fraud-detection.example.com:
+    url: https://localhost:7054
+    tlsCACerts:
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org1.fraud-detection.example.com/ca/ca.org1.fraud-detection.example.com-cert.pem
+    caName: ca-org1
+  ca.org2.fraud-detection.example.com:
+    url: https://localhost:8054
+    tlsCACerts:
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org2.fraud-detection.example.com/ca/ca.org2.fraud-detection.example.com-cert.pem
+    caName: ca-org2
+  ca.org3.fraud-detection.example.com:
+    url: https://localhost:9054
+    tlsCACerts:
+      path: /home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/blockchain/network/crypto-config/peerOrganizations/org3.fraud-detection.example.com/ca/ca.org3.fraud-detection.example.com-cert.pem
+    caName: ca-org3

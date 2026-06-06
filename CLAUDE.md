@@ -22,6 +22,7 @@ make infra-up           # Start Docker stack (postgres, mongo, redis, kafka, vau
 make infra-down         # Stop containers (keep volumes)
 make infra-clean        # Destroy containers + volumes (destructive)
 make infra-status       # Show container status
+make health             # Check health of all running services
 ```
 
 ### Build
@@ -43,18 +44,34 @@ make fabric-up                    # Start Hyperledger Fabric network separately
 ```bash
 make test                         # All unit tests
 make test-unit-go                 # Go unit tests with coverage
-make test-unit-python             # Python unit tests
+make test-unit-python             # Python unit tests (from tests/unit/)
 make test-unit-chaincode          # Chaincode tests
 make test-integration             # Integration tests (requires Docker)
-make test-e2e                     # E2E tests (Postman collections)
+make test-e2e                     # E2E tests (Postman collections via Newman)
 make test-perf                    # Locust performance tests
 make test-security                # gosec + bandit security scan
 make test-coverage                # Open coverage reports
 ```
 
+#### Run a single Go service's tests
+```bash
+cd services/iam-service && go test -v -race ./...
+cd services/transaction-service && go test -v -run TestProcessTransaction ./internal/service/...
+```
+
+#### Run chaincode tests
+```bash
+cd blockchain/chaincode/kyc-contract && go test -v -race ./...
+```
+
+#### Run Python tests for ml-service
+```bash
+cd services/ml-service && poetry run pytest tests/unit/test_ensemble.py -v
+```
+
 ### Lint & Format
 ```bash
-make lint                         # All linters (golangci-lint + flake8)
+make lint                         # All linters (golangci-lint + flake8 + black + mypy)
 make lint-go                      # Go only (.golangci.yml config)
 make lint-python                  # flake8 + black + mypy
 make fmt                          # Auto-format (gofmt + black + isort)
@@ -80,6 +97,7 @@ make ml-serve                             # Run ML service locally (FastAPI + gR
 ```bash
 make fabric-up                    # Start Hyperledger Fabric (3-org network)
 make chaincode-deploy             # Deploy kyc-contract, alert-contract, audit-contract
+make fabric-down                  # Stop and clean Fabric network
 ```
 
 ## Architecture
@@ -100,25 +118,46 @@ make chaincode-deploy             # Deploy kyc-contract, alert-contract, audit-c
 | `analytics-service` | Go | Reports, metrics aggregation |
 | `encryption-service` | Go | HashiCorp Vault Transit wrapper (AES-256-GCM) |
 
+### Go Workspace & Module Layout
+`go.work` ties 11 modules: 9 Go services + `shared/go` + `proto/gen/go`. Each service uses import path `github.com/fraud-detection/<service-name>`; shared library is `github.com/fraud-detection/shared`.
+
+Every Go service follows the same internal layer pattern:
+```
+services/<name>/
+  cmd/            # main.go — wires up dependencies
+  internal/
+    config/       # env-based config struct
+    domain/       # core types, no external dependencies
+    grpc/         # gRPC server handler (calls service layer)
+    repository/   # PostgreSQL/MongoDB/Redis adapters
+    service/      # business logic — depends only on interfaces defined in service.go
+```
+
+Service layer files define port interfaces (e.g. `TransactionStore`, `FraudPredictor`) to enforce dependency inversion; implementations in `repository/` satisfy those interfaces, enabling unit testing with mocks.
+
 ### Request Flow
-1. **API Gateway** (Traefik) → JWT auth + rate limit → injects `RequestMetadata` (trace ID, user ID, role) into gRPC headers
-2. **Transaction Service** consumes Kafka events → extracts features → calls **ML Service** via gRPC
-3. **ML Service** returns fraud probability + SHAP explanations
-4. If fraud: **Alert Service** publishes to Kafka → WebSocket notifications
-5. **Blockchain Service** anchors KYC records and alerts on Hyperledger Fabric
-6. **Case Service** generates SARs; all actions logged to Kafka audit topic
+1. **API Gateway** validates JWT by calling IAM service; caches validated claims by SHA-256(token). Public paths (login, register, refresh, health) bypass auth.
+2. Gateway injects `RequestMetadata` (trace ID, user ID, role) into outbound gRPC headers via shared `middleware` interceptors.
+3. **Transaction Service** consumes `transactions.raw` Kafka topic with a worker-pool consumer. For each message: extract features → call ML Service (gRPC `PredictFraud`) → update Redis velocity counters → persist to MongoDB → publish to `alerts.created` if fraud probability exceeds threshold.
+4. ML prediction failures fall back to a heuristic rule (non-blocking); storage failures are logged but do not roll back the in-memory result.
+5. **Alert Service** consumes `alerts.created` → pushes WebSocket notifications + Kafka `notifications.outbound`.
+6. **Blockchain Service** anchors KYC records and alerts on Hyperledger Fabric.
 
 ### Blockchain (`/blockchain/`)
 - **Hyperledger Fabric 2.x**, 3 organizations (Primary Bank / Regulator / Partner)
 - 3 channels: `kyc-channel`, `alert-channel`, `audit-channel`
-- 3 Go chaincodes: `kyc-contract`, `alert-contract`, `audit-contract`
+- 3 Go chaincodes: `kyc-contract`, `audit-contract`, `alert-contract`
+- Chaincodes use composite keys and Fabric events (e.g. `KYC_REGISTERED`) for off-chain indexing
+- Each chaincode is its own Go module under `blockchain/chaincode/<name>/`
 
 ### ML Pipeline (`/ml/`)
 - **Dataset**: Elliptic Bitcoin Transactions (203K txs, 166 features, temporal graph)
-- **Models**: Random Forest, XGBoost, LightGBM, GraphSAGE GNN, Autoencoder, Ensemble (weighted voting)
+- **Models**: `random_forest.py`, `xgboost_model.py`, `lightgbm_model.py`, `gnn_model.py`, `autoencoder.py`, `ensemble.py` — all extend `base.FraudModel`
+- **Ensemble weights** (ROC-AUC based): LightGBM 0.35, RF 0.33, XGBoost 0.32; supports A/B challenger routing via `ab_ratio`
 - **Targets**: >94% precision, >90% recall, >0.98 AUC-ROC
-- **Explainability**: SHAP (top-5 features) + LIME per prediction
+- **Explainability**: SHAP (top-5 features) + LIME per prediction at `ml/explainability/`
 - **Registry**: MLflow at `http://localhost:5000`
+- ML training code lives in `/ml/`; the deployed service lives in `/services/ml-service/` (FastAPI + gRPC)
 
 ### Event Bus (Kafka Topics)
 `kyc.events` · `transactions.raw` · `alerts.created` · `audit.events` · `blockchain.events` · `notifications.outbound`
@@ -126,26 +165,33 @@ make chaincode-deploy             # Deploy kyc-contract, alert-contract, audit-c
 ### Data Stores
 - **PostgreSQL 15** — KYC, IAM, alerts, cases (relational)
 - **MongoDB 6** — transaction time-series
-- **Redis 7** — sessions, caching, rate limiting, bloom filters
+- **Redis 7** — sessions, caching, rate limiting, bloom filters, velocity counters (sorted sets)
 
 ### Security Model
 - All PII encrypted via **Encryption Service → Vault Transit** before DB storage
 - JWT: 15min access tokens + 7-day refresh tokens stored in Redis
-- Rate limit: 100 req/min public; 5 failed logins → 15min lockout
-- All DB queries parameterized; TLS 1.3 enforced in production
+- Rate limit: 100 req/min public; 5 failed logins → 15min lockout (tracked in `User.FailedAttempts` / `LockedUntil`)
+- RBAC roles: `ADMIN`, `ANALYST`, `INVESTIGATOR`, `AUDITOR`, `API_CLIENT`
 
 ### Shared Go Libraries (`/shared/go/`)
 - `logger/` — structured logging (zerolog)
 - `tracing/` — OpenTelemetry instrumentation
 - `middleware/` — gRPC interceptors (auth, logging, tracing)
+- `grpcclient/` — shared gRPC dial helpers
+
+### Lint Configuration (`.golangci.yml`)
+Strict mode. Key rules: line length 120, cyclomatic complexity 15. Test files get relaxed rules for `gomnd`, `dupl`, `wrapcheck`. Generated proto files (`proto/gen/`) are excluded entirely. `godox` is disabled (TODO comments are expected).
 
 ## Key Files
-- `go.work` — Go workspace (10 modules, one per service + shared)
-- `pyproject.toml` — root Python config; `/ml/pyproject.toml` — ML dependencies (Poetry)
+- `go.work` — Go workspace (11 modules)
+- `pyproject.toml` — root Python config for `/ml/` training pipeline; `services/ml-service/pyproject.toml` — deployed ML service deps (Poetry)
 - `.golangci.yml` — Go linter configuration
-- `docker-compose.yml` — full local dev stack (13 containers)
+- `docker-compose.yml` — full local dev stack (13+ containers)
 - `docker-compose.test.yml` — isolated test environment
 - `.env.example` — all required environment variables (copy to `.env`)
+- `blockchain/network/configtx.yaml` — Fabric channel and org configuration
+- `proto/*.proto` — source of truth for all inter-service contracts
+- `worklog.md` — phase-by-phase implementation history and architecture decision log
 
 ## Local Dev Endpoints (after `make run`)
 | Service | URL |
@@ -157,8 +203,3 @@ make chaincode-deploy             # Deploy kyc-contract, alert-contract, audit-c
 | MLflow | http://localhost:5000 |
 | Vault UI | http://localhost:8200 |
 | Kafka UI | http://localhost:8090 (dev-tools profile) |
-
-## 15-Phase Roadmap Status
-- **Phases 1–4** (Complete): Foundation, infrastructure, proto contracts, IAM, encryption
-- **Phases 5–9** (In Progress): KYC, Hyperledger Fabric, ML service, transaction monitoring, alerts
-- **Phases 10–15** (Pending): Case management, API Gateway, analytics, testing, Kubernetes, CI/CD

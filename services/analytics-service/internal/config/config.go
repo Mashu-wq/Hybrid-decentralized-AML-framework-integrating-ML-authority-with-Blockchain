@@ -14,6 +14,7 @@ type Config struct {
 	Environment string
 	LogLevel    string
 	GRPCPort    int
+	HTTPPort    int
 
 	// PostgreSQL (reads from fraud_alerts, investigation_cases)
 	PostgresDSN     string
@@ -45,6 +46,7 @@ func Load() (*Config, error) {
 		Environment: env("ENVIRONMENT", "development"),
 		LogLevel:    env("LOG_LEVEL", "info"),
 		GRPCPort:    envInt("ANALYTICS_GRPC_PORT", 9008),
+		HTTPPort:    envInt("ANALYTICS_SERVICE_PORT", 9006),
 
 		PostgresHost:    env("POSTGRES_HOST", "localhost"),
 		PostgresPort:    envInt("POSTGRES_PORT", 5432),

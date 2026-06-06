@@ -13,18 +13,21 @@ setGlobals() {
       export CORE_PEER_MSPCONFIGPATH="${ROOT_DIR}/crypto-config/peerOrganizations/org1.fraud-detection.example.com/users/Admin@org1.fraud-detection.example.com/msp"
       export CORE_PEER_ADDRESS="localhost:7051"
       export CORE_PEER_TLS_ROOTCERT_FILE="${ROOT_DIR}/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt"
+      export CORE_PEER_TLS_HOSTNAME_OVERRIDE="peer0.org1.fraud-detection.example.com"
       ;;
     Org2)
       export CORE_PEER_LOCALMSPID="Org2MSP"
       export CORE_PEER_MSPCONFIGPATH="${ROOT_DIR}/crypto-config/peerOrganizations/org2.fraud-detection.example.com/users/Admin@org2.fraud-detection.example.com/msp"
       export CORE_PEER_ADDRESS="localhost:9051"
       export CORE_PEER_TLS_ROOTCERT_FILE="${ROOT_DIR}/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt"
+      export CORE_PEER_TLS_HOSTNAME_OVERRIDE="peer0.org2.fraud-detection.example.com"
       ;;
     Org3)
       export CORE_PEER_LOCALMSPID="Org3MSP"
       export CORE_PEER_MSPCONFIGPATH="${ROOT_DIR}/crypto-config/peerOrganizations/org3.fraud-detection.example.com/users/Admin@org3.fraud-detection.example.com/msp"
       export CORE_PEER_ADDRESS="localhost:11051"
       export CORE_PEER_TLS_ROOTCERT_FILE="${ROOT_DIR}/crypto-config/peerOrganizations/org3.fraud-detection.example.com/peers/peer0.org3.fraud-detection.example.com/tls/ca.crt"
+      export CORE_PEER_TLS_HOSTNAME_OVERRIDE="peer0.org3.fraud-detection.example.com"
       ;;
     *)
       echo "unknown org ${ORG}" >&2

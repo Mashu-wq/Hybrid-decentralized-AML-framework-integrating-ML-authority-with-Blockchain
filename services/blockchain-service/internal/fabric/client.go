@@ -2,24 +2,27 @@ package fabric
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	appconfig "github.com/fraud-detection/blockchain-service/internal/config"
 	"github.com/fraud-detection/blockchain-service/internal/kafka"
-	"github.com/hyperledger/fabric-sdk-go/pkg/client/channel"
-	"github.com/hyperledger/fabric-sdk-go/pkg/client/event"
-	"github.com/hyperledger/fabric-sdk-go/pkg/client/ledger"
-	"github.com/hyperledger/fabric-sdk-go/pkg/client/resmgmt"
-	"github.com/hyperledger/fabric-sdk-go/pkg/common/providers/fab"
-	coreconfig "github.com/hyperledger/fabric-sdk-go/pkg/core/config"
-	"github.com/hyperledger/fabric-sdk-go/pkg/fabsdk"
+	"github.com/hyperledger/fabric-gateway/pkg/client"
+	"github.com/hyperledger/fabric-gateway/pkg/identity"
+	"github.com/hyperledger/fabric-protos-go-apiv2/common"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/proto"
 )
 
+// Gateway is the contract exposed to the service layer. The implementation uses
+// the Hyperledger fabric-gateway client (Fabric 2.4+), which connects to a single
+// peer's Gateway service; that peer performs cross-org endorsement server-side.
 type Gateway interface {
 	Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error)
 	Query(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error)
@@ -31,25 +34,11 @@ type Gateway interface {
 type gateway struct {
 	cfg       appconfig.Config
 	log       zerolog.Logger
-	sdk       *fabsdk.FabricSDK
+	conn      *grpc.ClientConn
+	gw        *client.Gateway
 	publisher kafka.Publisher
 
-	pools             map[string]*channelPool
 	channelChaincodes map[string]string
-	events            []*eventRegistration
-}
-
-type channelPool struct {
-	clients []*channel.Client
-	next    uint64
-}
-
-type eventRegistration struct {
-	channelName  string
-	chaincode    string
-	eventClient  *event.Client
-	registration fab.Registration
-	notifier     <-chan *fab.CCEvent
 }
 
 type eventEnvelope struct {
@@ -62,210 +51,220 @@ type eventEnvelope struct {
 	Timestamp   string `json:"timestamp"`
 }
 
+// New connects to the Fabric Gateway peer and returns a ready Gateway.
 func New(cfg appconfig.Config, publisher kafka.Publisher, log zerolog.Logger) (Gateway, error) {
-	absProfile, err := filepath.Abs(cfg.ConnectionProfile)
+	conn, err := newGRPCConnection(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("resolve connection profile: %w", err)
+		return nil, fmt.Errorf("create grpc connection: %w", err)
 	}
 
-	sdk, err := fabsdk.New(coreconfig.FromFile(absProfile))
+	id, err := newIdentity(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create fabric sdk: %w", err)
+		_ = conn.Close()
+		return nil, fmt.Errorf("create identity: %w", err)
 	}
 
-	gw := &gateway{
+	sign, err := newSign(cfg)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("create signer: %w", err)
+	}
+
+	gw, err := client.Connect(
+		id,
+		client.WithSign(sign),
+		client.WithClientConnection(conn),
+		client.WithEvaluateTimeout(15*time.Second),
+		client.WithEndorseTimeout(30*time.Second),
+		client.WithSubmitTimeout(30*time.Second),
+		client.WithCommitStatusTimeout(1*time.Minute),
+	)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("connect gateway: %w", err)
+	}
+
+	return &gateway{
 		cfg:       cfg,
 		log:       log.With().Str("component", "fabric_gateway").Logger(),
-		sdk:       sdk,
+		conn:      conn,
+		gw:        gw,
 		publisher: publisher,
-		pools:     make(map[string]*channelPool, 3),
 		channelChaincodes: map[string]string{
 			cfg.KYCChannel:   cfg.KYCChaincode,
 			cfg.AlertChannel: cfg.AlertChaincode,
 			cfg.AuditChannel: cfg.AuditChaincode,
 		},
-	}
+	}, nil
+}
 
-	for channelName := range gw.channelChaincodes {
-		pool, err := gw.newChannelPool(channelName, cfg.PoolSize)
-		if err != nil {
-			sdk.Close()
-			return nil, fmt.Errorf("create channel pool for %s: %w", channelName, err)
-		}
-		gw.pools[channelName] = pool
+// newGRPCConnection dials the Gateway peer over TLS, validating the peer
+// certificate against the configured hostname override.
+func newGRPCConnection(cfg appconfig.Config) (*grpc.ClientConn, error) {
+	pem, err := os.ReadFile(cfg.TLSCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read tls cert %s: %w", cfg.TLSCertPath, err)
 	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("failed to add tls cert from %s", cfg.TLSCertPath)
+	}
+	creds := credentials.NewClientTLSFromCert(pool, cfg.GatewayHostnameOverride)
+	conn, err := grpc.NewClient(cfg.PeerEndpoint, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", cfg.PeerEndpoint, err)
+	}
+	return conn, nil
+}
 
-	return gw, nil
+func newIdentity(cfg appconfig.Config) (*identity.X509Identity, error) {
+	certPEM, err := os.ReadFile(cfg.SignCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read signcert %s: %w", cfg.SignCertPath, err)
+	}
+	cert, err := identity.CertificateFromPEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse signcert: %w", err)
+	}
+	return identity.NewX509Identity(cfg.MSPID, cert)
+}
+
+func newSign(cfg appconfig.Config) (identity.Sign, error) {
+	entries, err := os.ReadDir(cfg.KeystoreDir)
+	if err != nil {
+		return nil, fmt.Errorf("read keystore %s: %w", cfg.KeystoreDir, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no private key found in keystore %s", cfg.KeystoreDir)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(cfg.KeystoreDir, entries[0].Name()))
+	if err != nil {
+		return nil, fmt.Errorf("read private key: %w", err)
+	}
+	key, err := identity.PrivateKeyFromPEM(keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+	return identity.NewPrivateKeySign(key)
 }
 
 func (g *gateway) Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
-	_ = ctx
-	client, err := g.pickClient(channelName)
+	contract := g.gw.GetNetwork(channelName).GetContract(chaincodeName)
+
+	proposal, err := contract.NewProposal(function, client.WithBytesArguments(args...))
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("create proposal %s on %s/%s: %w", function, channelName, chaincodeName, err)
 	}
 
-	resp, err := client.Execute(
-		channel.Request{
-			ChaincodeID: chaincodeName,
-			Fcn:         function,
-			Args:        args,
-		},
-		channel.WithTimeout(fab.Execute, 30*time.Second),
-	)
+	txn, err := proposal.EndorseWithContext(ctx)
 	if err != nil {
-		return "", nil, fmt.Errorf("execute %s on %s/%s: %w", function, channelName, chaincodeName, err)
+		return "", nil, fmt.Errorf("endorse %s on %s/%s: %w", function, channelName, chaincodeName, err)
 	}
-	return string(resp.TransactionID), resp.Payload, nil
+
+	commit, err := txn.SubmitWithContext(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("submit %s on %s/%s: %w", function, channelName, chaincodeName, err)
+	}
+
+	status, err := commit.StatusWithContext(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("commit status %s on %s/%s: %w", function, channelName, chaincodeName, err)
+	}
+	if !status.Successful {
+		return "", nil, fmt.Errorf("transaction %s committed with code %d", status.TransactionID, status.Code)
+	}
+
+	return proposal.TransactionID(), txn.Result(), nil
 }
 
 func (g *gateway) Query(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
-	_ = ctx
-	client, err := g.pickClient(channelName)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Query(
-		channel.Request{
-			ChaincodeID: chaincodeName,
-			Fcn:         function,
-			Args:        args,
-		},
-		channel.WithTimeout(fab.Query, 15*time.Second),
-	)
+	contract := g.gw.GetNetwork(channelName).GetContract(chaincodeName)
+	result, err := contract.EvaluateWithContext(ctx, function, client.WithBytesArguments(args...))
 	if err != nil {
 		return nil, fmt.Errorf("query %s on %s/%s: %w", function, channelName, chaincodeName, err)
 	}
-	return resp.Payload, nil
+	return result, nil
 }
 
+// StartEventListeners subscribes to chaincode events on every channel and
+// forwards them to Kafka. Each listener runs until ctx is cancelled.
 func (g *gateway) StartEventListeners(ctx context.Context) error {
 	for channelName, chaincodeName := range g.channelChaincodes {
-		channelCtx := g.sdk.ChannelContext(channelName, fabsdk.WithUser(g.cfg.Username), fabsdk.WithOrg(g.cfg.OrgName))
-		eventClient, err := event.New(channelCtx, event.WithBlockEvents())
+		network := g.gw.GetNetwork(channelName)
+		events, err := network.ChaincodeEvents(ctx, chaincodeName)
 		if err != nil {
-			return fmt.Errorf("create event client for %s: %w", channelName, err)
+			return fmt.Errorf("register chaincode events for %s/%s: %w", channelName, chaincodeName, err)
 		}
-
-		reg, notifier, err := eventClient.RegisterChaincodeEvent(chaincodeName, ".*")
-		if err != nil {
-			return fmt.Errorf("register chaincode event for %s/%s: %w", channelName, chaincodeName, err)
-		}
-
-		entry := &eventRegistration{
-			channelName:  channelName,
-			chaincode:    chaincodeName,
-			eventClient:  eventClient,
-			registration: reg,
-			notifier:     notifier,
-		}
-		g.events = append(g.events, entry)
-
-		go g.consumeEvents(ctx, entry)
+		go g.consumeEvents(ctx, channelName, chaincodeName, events)
 	}
 	return nil
 }
 
-func (g *gateway) consumeEvents(ctx context.Context, entry *eventRegistration) {
+func (g *gateway) consumeEvents(ctx context.Context, channelName, chaincodeName string, events <-chan *client.ChaincodeEvent) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case evt, ok := <-entry.notifier:
+		case evt, ok := <-events:
 			if !ok {
 				return
 			}
 
 			envelope := eventEnvelope{
-				ChannelName: entry.channelName,
-				Chaincode:   entry.chaincode,
+				ChannelName: channelName,
+				Chaincode:   chaincodeName,
 				EventName:   evt.EventName,
-				TxID:        evt.TxID,
+				TxID:        evt.TransactionID,
 				BlockNumber: evt.BlockNumber,
 				Payload:     string(evt.Payload),
 				Timestamp:   time.Now().UTC().Format(time.RFC3339),
 			}
 			payload, _ := json.Marshal(envelope)
 
-			if err := g.publisher.Publish(ctx, evt.TxID, payload); err != nil {
-				g.log.Error().Err(err).Str("channel", entry.channelName).Str("chaincode", entry.chaincode).Msg("publish chaincode event")
+			if err := g.publisher.Publish(ctx, evt.TransactionID, payload); err != nil {
+				g.log.Error().Err(err).Str("channel", channelName).Str("chaincode", chaincodeName).Msg("publish chaincode event")
 				continue
 			}
 
 			g.log.Info().
-				Str("channel", entry.channelName).
-				Str("chaincode", entry.chaincode).
+				Str("channel", channelName).
+				Str("chaincode", chaincodeName).
 				Str("event_name", evt.EventName).
-				Str("tx_id", evt.TxID).
+				Str("tx_id", evt.TransactionID).
 				Uint64("block_number", evt.BlockNumber).
 				Msg("forwarded chaincode event to kafka")
 		}
 	}
 }
 
+// Health queries the ledger height of each channel via the qscc system chaincode.
 func (g *gateway) Health(ctx context.Context) map[string]string {
-	results := make(map[string]string, len(g.pools))
+	results := make(map[string]string, len(g.channelChaincodes))
 
-	for channelName := range g.pools {
-		channelCtx := g.sdk.ChannelContext(channelName, fabsdk.WithUser(g.cfg.Username), fabsdk.WithOrg(g.cfg.OrgName))
-		ledgerClient, err := ledger.New(channelCtx)
+	for channelName := range g.channelChaincodes {
+		qscc := g.gw.GetNetwork(channelName).GetContract("qscc")
+		raw, err := qscc.EvaluateWithContext(ctx, "GetChainInfo", client.WithArguments(channelName))
 		if err != nil {
-			results[channelName] = err.Error()
+			results[channelName] = "error: " + err.Error()
 			continue
 		}
 
-		info, err := ledgerClient.QueryInfo()
-		if err != nil {
-			results[channelName] = err.Error()
+		info := &common.BlockchainInfo{}
+		if err := proto.Unmarshal(raw, info); err != nil {
+			results[channelName] = "error: decode chain info: " + err.Error()
 			continue
 		}
-		results[channelName] = fmt.Sprintf("connected:block_height=%d", info.BCI.Height)
-	}
-
-	adminCtx := g.sdk.Context(fabsdk.WithUser(g.cfg.Username), fabsdk.WithOrg(g.cfg.OrgName))
-	rm, err := resmgmt.New(adminCtx)
-	if err != nil {
-		results["resmgmt"] = err.Error()
-		return results
-	}
-
-	if _, err := rm.QueryChannels(resmgmt.WithTimeout(fab.Query, 10*time.Second)); err != nil {
-		results["resmgmt"] = err.Error()
-	} else {
-		results["resmgmt"] = "connected"
+		results[channelName] = fmt.Sprintf("connected:block_height=%d", info.GetHeight())
 	}
 
 	return results
 }
 
 func (g *gateway) Close() {
-	for _, reg := range g.events {
-		reg.eventClient.Unregister(reg.registration)
+	if g.gw != nil {
+		_ = g.gw.Close()
 	}
-	if g.sdk != nil {
-		g.sdk.Close()
+	if g.conn != nil {
+		_ = g.conn.Close()
 	}
-}
-
-func (g *gateway) newChannelPool(channelName string, size int) (*channelPool, error) {
-	pool := &channelPool{clients: make([]*channel.Client, 0, size)}
-	for i := 0; i < size; i++ {
-		channelCtx := g.sdk.ChannelContext(channelName, fabsdk.WithUser(g.cfg.Username), fabsdk.WithOrg(g.cfg.OrgName))
-		client, err := channel.New(channelCtx)
-		if err != nil {
-			return nil, err
-		}
-		pool.clients = append(pool.clients, client)
-	}
-	return pool, nil
-}
-
-func (g *gateway) pickClient(channelName string) (*channel.Client, error) {
-	pool, ok := g.pools[channelName]
-	if !ok {
-		return nil, fmt.Errorf("channel %s is not configured", channelName)
-	}
-	index := atomic.AddUint64(&pool.next, 1)
-	return pool.clients[int(index-1)%len(pool.clients)], nil
 }

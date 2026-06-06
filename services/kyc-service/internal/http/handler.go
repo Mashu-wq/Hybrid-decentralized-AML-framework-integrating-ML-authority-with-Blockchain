@@ -66,12 +66,6 @@ type submitDocumentRequest struct {
 	IsFront      bool   `json:"is_front"`
 }
 
-type verifyFaceRequest struct {
-	SelfieS3Key   string `json:"selfie_s3_key"`
-	DocumentS3Key string `json:"document_s3_key"`
-	CheckLiveness bool   `json:"check_liveness"`
-}
-
 type updateKYCStatusRequest struct {
 	Status     string `json:"status"`
 	RiskLevel  string `json:"risk_level"`
@@ -335,47 +329,9 @@ func (h *KYCHTTPHandler) submitMultipartDocument(w http.ResponseWriter, r *http.
 	})
 }
 
-// VerifyFace handles POST /api/v1/kyc/customers/{id}/face-verify.
+// VerifyFace is not configured in this deployment.
 func (h *KYCHTTPHandler) VerifyFace(w http.ResponseWriter, r *http.Request) {
-	customerID := r.PathValue("id")
-	if customerID == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "customer id is required")
-		return
-	}
-
-	var req verifyFaceRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-		return
-	}
-
-	if req.SelfieS3Key == "" || req.DocumentS3Key == "" {
-		writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "selfie_s3_key and document_s3_key are required")
-		return
-	}
-
-	in := &service.VerifyFaceInput{
-		CustomerID:    customerID,
-		SelfieS3Key:   req.SelfieS3Key,
-		DocumentS3Key: req.DocumentS3Key,
-		CheckLiveness: req.CheckLiveness,
-	}
-
-	result, err := h.kycSvc.VerifyFace(r.Context(), in)
-	if err != nil {
-		writeKYCError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"customer_id":     customerID,
-		"face_match":      result.FaceMatch,
-		"match_score":     result.MatchScore,
-		"liveness_passed": result.LivenessPassed,
-		"liveness_score":  result.LivenessScore,
-		"model_version":   result.ModelVersion,
-		"failure_reason":  result.FailureReason,
-	})
+	writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "face verification is not configured")
 }
 
 // GetDecryptedPII handles GET /api/v1/kyc/customers/{id}/pii.

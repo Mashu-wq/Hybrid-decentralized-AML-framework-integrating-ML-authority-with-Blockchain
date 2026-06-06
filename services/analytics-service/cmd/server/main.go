@@ -21,6 +21,7 @@ import (
 
 	"github.com/fraud-detection/analytics-service/internal/config"
 	grpcserver "github.com/fraud-detection/analytics-service/internal/grpc"
+	analyticshttp "github.com/fraud-detection/analytics-service/internal/http"
 	mongorepo "github.com/fraud-detection/analytics-service/internal/repository/mongo"
 	pgRepo "github.com/fraud-detection/analytics-service/internal/repository/postgres"
 	"github.com/fraud-detection/analytics-service/internal/service"
@@ -112,9 +113,10 @@ func run() error {
 	svc := service.New(alertRepo, txRepo, log)
 
 	// -------------------------------------------------------------------------
-	// 7. gRPC server
+	// 7. gRPC server + HTTP health server
 	// -------------------------------------------------------------------------
 	grpcSrv := grpcserver.New(svc, log, cfg.JWTSecret)
+	httpSrv := analyticshttp.New(log, cfg.HTTPPort)
 
 	// -------------------------------------------------------------------------
 	// 8. Graceful shutdown orchestration
@@ -122,14 +124,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		if err := grpcSrv.Run(ctx, cfg.GRPCPort); err != nil {
 			errCh <- fmt.Errorf("grpc server: %w", err)
 		}
 	}()
 
-	log.Info().Int("grpc_port", cfg.GRPCPort).Msg("analytics-service ready")
+	go func() {
+		if err := httpSrv.Run(ctx); err != nil {
+			errCh <- fmt.Errorf("http server: %w", err)
+		}
+	}()
+
+	log.Info().Int("grpc_port", cfg.GRPCPort).Int("http_port", cfg.HTTPPort).Msg("analytics-service ready")
 
 	select {
 	case <-ctx.Done():

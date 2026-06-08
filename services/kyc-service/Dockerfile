@@ -3,7 +3,7 @@
 ## This pattern matches the other services in this repository.
 
 # ---- Builder ----
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install build dependencies.
 RUN apk add --no-cache git ca-certificates tzdata
@@ -19,6 +19,8 @@ COPY proto/gen/go/ proto/gen/go/
 
 # Copy service source.
 COPY services/kyc-service/ services/kyc-service/
+
+RUN printf 'go 1.25.0\n\nuse (\n\t./services/kyc-service\n\t./shared/go\n\t./proto/gen/go\n)\n' > go.work
 
 # Build the binary.
 RUN cd services/kyc-service && \

@@ -3,6 +3,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -50,6 +52,7 @@ type EvidenceStore interface {
 type BlockchainAuditor interface {
 	RecordInvestigatorAction(ctx context.Context, actionID, investigatorID, caseID, action, notes string) (string, error)
 	UpdateAlertStatus(ctx context.Context, alertID, status, investigatorID, notes string) (string, error)
+	RecordSARFiled(ctx context.Context, caseID, sarHash, s3Key, filedAt, generatedBy string) (string, error)
 	Ping(ctx context.Context) error
 }
 
@@ -426,15 +429,22 @@ func (s *CaseService) GenerateSAR(ctx context.Context, caseID, generatedBy, note
 		log.Warn().Err(err).Msg("failed to presign SAR download URL")
 	}
 
-	// Record on Fabric
+	// Record investigator action on Fabric audit-channel (non-fatal)
 	s.auditAsync(ctx, caseID, generatedBy, "SAR_GENERATED",
 		fmt.Sprintf("SAR PDF uploaded to S3: %s. Notes: %s", s3Key, notes))
+
+	// Anchor the SAR document hash on Fabric — proves the PDF content cannot be
+	// altered after filing. A regulator can recompute SHA-256 of the S3 object
+	// and compare against the on-chain hash.
+	sarHash := sha256SAR(pdfBytes)
+	s.sarAnchorAsync(caseID, sarHash, s3Key, time.Now().UTC().Format(time.RFC3339), generatedBy)
 
 	log.Info().
 		Str("case_id", caseID).
 		Str("s3_key", s3Key).
+		Str("sar_hash", sarHash).
 		Str("generated_by", generatedBy).
-		Msg("SAR generated and uploaded")
+		Msg("SAR generated, uploaded, and hash anchored to blockchain")
 
 	return s3Key, downloadURL, nil
 }
@@ -485,6 +495,37 @@ func (s *CaseService) nextInvestigator() string {
 	}
 	idx := s.rrIdx.Add(1) - 1
 	return s.investigators[idx%uint64(len(s.investigators))]
+}
+
+// sarAnchorAsync anchors the SAR document hash on Hyperledger Fabric's audit-channel
+// in a goroutine. Failures are logged and silently dropped — the SAR is already in S3.
+func (s *CaseService) sarAnchorAsync(caseID, sarHash, s3Key, filedAt, generatedBy string) {
+	if s.blockchain == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		txID, err := s.blockchain.RecordSARFiled(ctx, caseID, sarHash, s3Key, filedAt, generatedBy)
+		if err != nil {
+			log.Warn().Err(err).
+				Str("case_id", caseID).
+				Str("sar_hash", sarHash).
+				Msg("blockchain SAR anchor failed — SAR is in S3 but hash is not on-chain")
+			return
+		}
+		log.Info().
+			Str("case_id", caseID).
+			Str("sar_hash", sarHash).
+			Str("blockchain_tx_id", txID).
+			Msg("SAR hash anchored on Fabric audit-channel")
+	}()
+}
+
+// sha256SAR returns the hex-encoded SHA-256 hash of the SAR PDF bytes.
+func sha256SAR(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // auditAsync records an investigator action on Hyperledger Fabric in a goroutine.

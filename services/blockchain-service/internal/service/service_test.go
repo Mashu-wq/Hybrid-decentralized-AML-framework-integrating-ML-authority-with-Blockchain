@@ -307,6 +307,66 @@ func TestRecordModelPrediction(t *testing.T) {
 	require.Equal(t, "tx-6", resp.TransactionID)
 }
 
+func TestRecordTransactionReceipt(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{
+		invokeFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
+			require.Equal(t, "audit-channel", channelName)
+			require.Equal(t, "audit-contract", chaincodeName)
+			require.Equal(t, "RecordTransactionProcessed", function)
+			require.Len(t, args, 14)
+			require.Equal(t, "txhash-001", string(args[0])) // recordID
+			require.Equal(t, "txhash-001", string(args[1])) // txHash
+			require.Equal(t, "customer-001", string(args[2]))
+			require.Equal(t, "15000", string(args[3]))   // amountUSD
+			require.Equal(t, "USD", string(args[4]))
+			require.Equal(t, "WIRE", string(args[5]))
+			require.Equal(t, "US", string(args[6]))
+			require.Equal(t, "0.87", string(args[8]))    // fraudProbability
+			require.Equal(t, "CRITICAL", string(args[9]))
+			require.Equal(t, "true", string(args[10]))   // alertFired
+			require.Equal(t, "alert-001", string(args[11]))
+			return "tx-receipt-1", []byte(`{"recordID":"txhash-001","recordType":"TRANSACTION_PROCESSED"}`), nil
+		},
+	})
+
+	resp, err := svc.RecordTransactionReceipt(context.Background(), domain.TransactionReceiptRequest{
+		RecordID:         "txhash-001",
+		TxHash:           "txhash-001",
+		CustomerID:       "customer-001",
+		AmountUSD:        15000,
+		CurrencyCode:     "USD",
+		Channel:          "WIRE",
+		CountryCode:      "US",
+		ProcessedAt:      "2026-06-08T10:00:00Z",
+		FraudProbability: 0.87,
+		RiskLevel:        "CRITICAL",
+		AlertFired:       true,
+		AlertID:          "alert-001",
+		ModelVersion:     "ensemble-v1",
+		PredictionID:     "pred-abc-001",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "tx-receipt-1", resp.TransactionID)
+}
+
+func TestRecordTransactionReceipt_MissingTxHash(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{})
+	_, err := svc.RecordTransactionReceipt(context.Background(), domain.TransactionReceiptRequest{
+		CustomerID: "customer-001",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tx_hash is required")
+}
+
+func TestRecordTransactionReceipt_MissingCustomerID(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{})
+	_, err := svc.RecordTransactionReceipt(context.Background(), domain.TransactionReceiptRequest{
+		TxHash: "txhash-001",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "customer_id is required")
+}
+
 // ---------------------------------------------------------------------------
 // Audit query tests
 // ---------------------------------------------------------------------------

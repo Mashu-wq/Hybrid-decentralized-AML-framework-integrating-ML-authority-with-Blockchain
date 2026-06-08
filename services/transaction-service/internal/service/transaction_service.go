@@ -65,22 +65,30 @@ type AlertPublisher interface {
 	Close() error
 }
 
+// BlockchainAnchor writes a tamper-evident TRANSACTION_PROCESSED receipt to the
+// blockchain audit-channel for every ML-scored transaction. Implementations must
+// be non-blocking and must never return errors — all failures are handled internally.
+type BlockchainAnchor interface {
+	AnchorTransactionReceipt(enriched *domain.EnrichedTransaction)
+}
+
 // ---------------------------------------------------------------------------
 // TransactionService
 // ---------------------------------------------------------------------------
 
 // TransactionService is the central orchestrator for transaction monitoring.
 type TransactionService struct {
-	extractor      FeatureExtractor
-	predictor      FraudPredictor
-	txStore        TransactionStore
-	velocityStore  VelocityStore
-	alertPublisher AlertPublisher
-	log            zerolog.Logger
+	extractor        FeatureExtractor
+	predictor        FraudPredictor
+	txStore          TransactionStore
+	velocityStore    VelocityStore
+	alertPublisher   AlertPublisher
+	blockchainAnchor BlockchainAnchor
+	log              zerolog.Logger
 
-	alertThreshold    float64 // publish alert if fraud_prob > this
-	velocity1HLimit   int
-	velocity24HLimit  int
+	alertThreshold   float64 // publish alert if fraud_prob > this
+	velocity1HLimit  int
+	velocity24HLimit int
 }
 
 // Config holds TransactionService configuration.
@@ -97,16 +105,18 @@ func NewTransactionService(
 	txStore TransactionStore,
 	velocityStore VelocityStore,
 	alertPublisher AlertPublisher,
+	blockchainAnchor BlockchainAnchor,
 	cfg Config,
 	log zerolog.Logger,
 ) *TransactionService {
 	return &TransactionService{
-		extractor:      extractor,
-		predictor:      predictor,
-		txStore:        txStore,
-		velocityStore:  velocityStore,
-		alertPublisher: alertPublisher,
-		log:            log.With().Str("component", "transaction_service").Logger(),
+		extractor:        extractor,
+		predictor:        predictor,
+		txStore:          txStore,
+		velocityStore:    velocityStore,
+		alertPublisher:   alertPublisher,
+		blockchainAnchor: blockchainAnchor,
+		log:              log.With().Str("component", "transaction_service").Logger(),
 		alertThreshold:   cfg.AlertThreshold,
 		velocity1HLimit:  cfg.Velocity1HLimit,
 		velocity24HLimit: cfg.Velocity24HLimit,
@@ -126,8 +136,9 @@ func NewTransactionService(
 //  2. Extract features (Redis lookups for velocity, last_tx, profile, country history)
 //  3. Call ML service PredictFraud (with heuristic fallback on unavailability)
 //  4. Update Redis: velocity sorted set, last_tx cache, risk score (5-min TTL)
-//  5. Store enriched transaction in MongoDB
-//  6. If fraud_probability > threshold → publish AlertEvent to Kafka
+//  5. If fraud_probability > threshold → publish AlertEvent to Kafka
+//  6. Store enriched transaction in MongoDB
+//  7. Fire-and-forget: anchor TRANSACTION_PROCESSED receipt to blockchain audit-channel
 //
 // Returns the fully enriched transaction record.
 func (s *TransactionService) ProcessTransaction(ctx context.Context, raw *domain.RawTransaction) (*domain.EnrichedTransaction, error) {
@@ -222,6 +233,11 @@ func (s *TransactionService) ProcessTransaction(ctx context.Context, raw *domain
 	if err := s.txStore.Save(ctx, enriched); err != nil {
 		log.Error().Err(err).Msg("failed to persist enriched transaction to MongoDB")
 		// Return the enriched result anyway — the caller (gRPC sync) still needs it.
+	}
+
+	// --- Step 7: Blockchain audit anchor (fire-and-forget, never blocks pipeline) ---
+	if s.blockchainAnchor != nil {
+		s.blockchainAnchor.AnchorTransactionReceipt(enriched)
 	}
 
 	log.Info().

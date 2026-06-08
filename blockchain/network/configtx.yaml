@@ -38,6 +38,9 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org1.fraud-detection.example.com
         Port: 7051
+    # Org1 (PrimaryBank) administers orderer0 — distributed orderer ownership
+    OrdererEndpoints:
+      - orderer0.fraud-detection.example.com:7050
 
   - &Org2
     Name: Org2MSP
@@ -59,6 +62,9 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org2.fraud-detection.example.com
         Port: 9051
+    # Org2 (Regulator) administers orderer1 — distributed orderer ownership
+    OrdererEndpoints:
+      - orderer1.fraud-detection.example.com:8050
 
   - &Org3
     Name: Org3MSP
@@ -80,6 +86,9 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org3.fraud-detection.example.com
         Port: 11051
+    # Org3 (PartnerBank) administers orderer2 — distributed orderer ownership
+    OrdererEndpoints:
+      - orderer2.fraud-detection.example.com:9050
 
 Capabilities:
   Channel: &ChannelCapabilities
@@ -164,6 +173,10 @@ Orderer: &OrdererDefaults
     Admins:
       Type: ImplicitMeta
       Rule: "MAJORITY Admins"
+    # BlockValidation requires MAJORITY of orderer org admins to sign a block.
+    # With Org1+Org2+Org3 all in the orderer organizations, this means
+    # at least 2 of the 3 business orgs must endorse every block — no single
+    # org can unilaterally produce a valid block.
     BlockValidation:
       Type: ImplicitMeta
       Rule: "MAJORITY Writers"
@@ -190,8 +203,14 @@ Profiles:
     <<: *ChannelDefaults
     Orderer:
       <<: *OrdererDefaults
+      # All 3 business orgs are orderer organizations — no single entity controls ordering.
+      # Any orderer config change now requires MAJORITY of {Org1, Org2, Org3}.
+      # orderer0 → Org1 (PrimaryBank), orderer1 → Org2 (Regulator), orderer2 → Org3 (PartnerBank).
       Organizations:
         - *OrdererOrg
+        - *Org1
+        - *Org2
+        - *Org3
     Consortiums:
       FraudConsortium:
         Organizations:

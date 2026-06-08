@@ -115,6 +115,78 @@ func (s *Service) RecordModelPrediction(ctx context.Context, req domain.ModelPre
 	return newTransactionResponse(txID, payload), nil
 }
 
+// RecordTransactionReceipt writes a TRANSACTION_PROCESSED audit record to the
+// audit-channel for every ML-scored transaction (fraudulent and non-fraudulent).
+// This creates an immutable, tamper-evident proof that the transaction was seen
+// and scored, closing the fabrication gap in the compliance audit trail.
+func (s *Service) RecordTransactionReceipt(ctx context.Context, req domain.TransactionReceiptRequest) (domain.TransactionResponse, error) {
+	if strings.TrimSpace(req.TxHash) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("tx_hash is required")
+	}
+	if strings.TrimSpace(req.CustomerID) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("customer_id is required")
+	}
+
+	recordID := req.TxHash // txHash as recordID gives natural idempotency
+
+	txID, payload, err := s.gateway.Invoke(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode,
+		"RecordTransactionProcessed", [][]byte{
+			[]byte(recordID),
+			[]byte(req.TxHash),
+			[]byte(req.CustomerID),
+			[]byte(strconv.FormatFloat(req.AmountUSD, 'f', -1, 64)),
+			[]byte(req.CurrencyCode),
+			[]byte(req.Channel),
+			[]byte(req.CountryCode),
+			[]byte(req.ProcessedAt),
+			[]byte(strconv.FormatFloat(req.FraudProbability, 'f', -1, 64)),
+			[]byte(req.RiskLevel),
+			[]byte(strconv.FormatBool(req.AlertFired)),
+			[]byte(req.AlertID),
+			[]byte(req.ModelVersion),
+			[]byte(req.PredictionID),
+		})
+	if err != nil {
+		return domain.TransactionResponse{}, err
+	}
+	return newTransactionResponse(txID, payload), nil
+}
+
+// RecordSARFiled writes a SAR_FILED audit record to the audit-channel when a SAR
+// document is generated. The sarHash anchors the document content on-chain so that
+// regulators can independently verify the PDF has not been modified after filing.
+func (s *Service) RecordSARFiled(ctx context.Context, req domain.SARFiledRequest) (domain.TransactionResponse, error) {
+	if strings.TrimSpace(req.CaseID) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("case_id is required")
+	}
+	if strings.TrimSpace(req.SARHash) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("sar_hash is required")
+	}
+	if strings.TrimSpace(req.GeneratedBy) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("generated_by is required")
+	}
+
+	// recordID = caseID + "-sar" gives natural idempotency: one SAR per case.
+	recordID := req.CaseID + "-sar"
+	if strings.TrimSpace(req.RecordID) != "" {
+		recordID = req.RecordID
+	}
+
+	txID, payload, err := s.gateway.Invoke(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode,
+		"RecordSARFiled", [][]byte{
+			[]byte(recordID),
+			[]byte(req.CaseID),
+			[]byte(req.SARHash),
+			[]byte(req.S3Key),
+			[]byte(req.FiledAt),
+			[]byte(req.GeneratedBy),
+		})
+	if err != nil {
+		return domain.TransactionResponse{}, err
+	}
+	return newTransactionResponse(txID, payload), nil
+}
+
 // ---------------------------------------------------------------------------
 // KYC queries
 // ---------------------------------------------------------------------------

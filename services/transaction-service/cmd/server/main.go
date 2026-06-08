@@ -171,12 +171,15 @@ func run() error {
 		cfg.VelocityAlert24HLimit,
 	)
 
+	blockchainAnchor := clients.NewBlockchainAnchorClient(cfg.BlockchainServiceAddr, log)
+
 	txService := service.NewTransactionService(
 		extractor,
 		mlClient,
 		txRepo,
 		velocityRepo,
 		alertProducer,
+		blockchainAnchor,
 		service.Config{
 			AlertThreshold:   cfg.FraudAlertThreshold,
 			Velocity1HLimit:  cfg.VelocityAlert1HLimit,

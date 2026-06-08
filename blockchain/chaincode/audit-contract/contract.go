@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,15 +22,18 @@ const (
 )
 
 var allowedAuditTypes = map[string]struct{}{
-	"INVESTIGATOR_ACTION": {},
-	"MODEL_PREDICTION":    {},
+	"INVESTIGATOR_ACTION":    {},
+	"MODEL_PREDICTION":       {},
+	"TRANSACTION_PROCESSED":  {},
+	"SAR_FILED":              {},
 }
 
 var allowedEntityTypes = map[string]struct{}{
-	"CUSTOMER": {},
-	"CASE":     {},
-	"ALERT":    {},
-	"MODEL":    {},
+	"CUSTOMER":    {},
+	"CASE":        {},
+	"ALERT":       {},
+	"MODEL":       {},
+	"TRANSACTION": {},
 }
 
 type AuditRecord struct {
@@ -47,13 +51,15 @@ type AuditRecord struct {
 }
 
 type ComplianceReport struct {
-	StartDate           string         `json:"startDate"`
-	EndDate             string         `json:"endDate"`
-	TotalEvents         int            `json:"totalEvents"`
-	InvestigatorActions int            `json:"investigatorActions"`
-	ModelPredictions    int            `json:"modelPredictions"`
-	ByEntityType        map[string]int `json:"byEntityType"`
-	SampleRecords       []*AuditRecord `json:"sampleRecords"`
+	StartDate              string         `json:"startDate"`
+	EndDate                string         `json:"endDate"`
+	TotalEvents            int            `json:"totalEvents"`
+	InvestigatorActions    int            `json:"investigatorActions"`
+	ModelPredictions       int            `json:"modelPredictions"`
+	TransactionsProcessed  int            `json:"transactionsProcessed"`
+	SARsFiled              int            `json:"sarsFiled"`
+	ByEntityType           map[string]int `json:"byEntityType"`
+	SampleRecords          []*AuditRecord `json:"sampleRecords"`
 }
 
 type auditEvent struct {
@@ -83,6 +89,10 @@ func (c *AuditChaincode) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return c.RecordInvestigatorAction(stub, args)
 	case "RecordModelPrediction":
 		return c.RecordModelPrediction(stub, args)
+	case "RecordTransactionProcessed":
+		return c.RecordTransactionProcessed(stub, args)
+	case "RecordSARFiled":
+		return c.RecordSARFiled(stub, args)
 	case "GetAuditTrail":
 		return c.GetAuditTrail(stub, args)
 	case "GetComplianceReport":
@@ -139,6 +149,185 @@ func (c *AuditChaincode) RecordModelPrediction(stub shim.ChaincodeStubInterface,
 			"features":     strings.TrimSpace(args[2]),
 			"prediction":   strings.TrimSpace(args[3]),
 			"shapValues":   strings.TrimSpace(args[4]),
+		},
+	)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := writeAuditRecord(stub, record); err != nil {
+		return shim.Error(err.Error())
+	}
+
+	payload, _ := json.Marshal(record)
+	return shim.Success(payload)
+}
+
+// RecordTransactionProcessed writes a tamper-evident processing receipt to the ledger
+// for every transaction that passes through the ML pipeline — whether flagged or not.
+// This closes the "fabrication gap": a bank cannot omit a transaction from the audit
+// trail, because absence of a receipt would itself be detectable by the regulator.
+//
+// args: recordID, txHash, customerID, amountUSD, currencyCode, channel, countryCode,
+//
+//	processedAt (RFC3339), fraudProbability (0-1), riskLevel, alertFired (true|false),
+//	alertID, modelVersion, predictionID
+func (c *AuditChaincode) RecordTransactionProcessed(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	const expectedArgs = 14
+	if len(args) != expectedArgs {
+		return shim.Error(fmt.Sprintf(
+			"RecordTransactionProcessed requires %d arguments: "+
+				"recordID, txHash, customerID, amountUSD, currencyCode, channel, countryCode, "+
+				"processedAt, fraudProbability, riskLevel, alertFired, alertID, modelVersion, predictionID",
+			expectedArgs,
+		))
+	}
+
+	recordID         := strings.TrimSpace(args[0])
+	txHash           := strings.TrimSpace(args[1])
+	customerID       := strings.TrimSpace(args[2])
+	amountUSDStr     := strings.TrimSpace(args[3])
+	currencyCode     := strings.TrimSpace(args[4])
+	channel          := strings.TrimSpace(args[5])
+	countryCode      := strings.TrimSpace(args[6])
+	processedAt      := strings.TrimSpace(args[7])
+	fraudProbStr     := strings.TrimSpace(args[8])
+	riskLevel        := normalizeEnum(args[9])
+	alertFiredStr    := strings.TrimSpace(args[10])
+	alertID          := strings.TrimSpace(args[11])
+	modelVersion     := strings.TrimSpace(args[12])
+	predictionID     := strings.TrimSpace(args[13])
+
+	// Required field checks
+	if err := validateAuditID(txHash, "txHash"); err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := validateAuditID(customerID, "customerID"); err != nil {
+		return shim.Error(err.Error())
+	}
+
+	// Validate amountUSD is a parseable non-negative number
+	if amt, err := strconv.ParseFloat(amountUSDStr, 64); err != nil || amt < 0 {
+		return shim.Error("amountUSD must be a non-negative float")
+	}
+
+	// Validate fraudProbability is in [0, 1]
+	fraudProb, err := strconv.ParseFloat(fraudProbStr, 64)
+	if err != nil || fraudProb < 0 || fraudProb > 1 {
+		return shim.Error("fraudProbability must be a float in [0, 1]")
+	}
+
+	// Validate processedAt is parseable RFC3339
+	if _, err := time.Parse(time.RFC3339, processedAt); err != nil {
+		return shim.Error("processedAt must be RFC3339 format (e.g. 2006-01-02T15:04:05Z)")
+	}
+
+	// Validate riskLevel
+	allowedRisk := map[string]struct{}{
+		"LOW": {}, "MEDIUM": {}, "HIGH": {}, "CRITICAL": {}, "UNSPECIFIED": {},
+	}
+	if _, ok := allowedRisk[riskLevel]; !ok {
+		return shim.Error(fmt.Sprintf("invalid riskLevel %q", riskLevel))
+	}
+
+	// Validate alertFired is a parseable boolean
+	if _, err := strconv.ParseBool(alertFiredStr); err != nil {
+		return shim.Error("alertFired must be \"true\" or \"false\"")
+	}
+
+	// actorID = modelVersion (records which model processed this transaction).
+	// Fall back to "transaction-service" when model version is empty (heuristic path).
+	actorID := modelVersion
+	if actorID == "" {
+		actorID = "transaction-service"
+	}
+
+	record, err := newAuditRecord(
+		stub,
+		recordID,
+		"TRANSACTION_PROCESSED",
+		txHash,
+		"TRANSACTION",
+		actorID,
+		"ML pipeline transaction processing receipt",
+		map[string]string{
+			"txHash":           txHash,
+			"customerID":       customerID,
+			"amountUSD":        amountUSDStr,
+			"currencyCode":     currencyCode,
+			"channel":          channel,
+			"countryCode":      countryCode,
+			"processedAt":      processedAt,
+			"fraudProbability": fraudProbStr,
+			"riskLevel":        riskLevel,
+			"alertFired":       alertFiredStr,
+			"alertID":          alertID,
+			"modelVersion":     modelVersion,
+			"predictionID":     predictionID,
+		},
+	)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	if err := writeAuditRecord(stub, record); err != nil {
+		return shim.Error(err.Error())
+	}
+
+	payload, _ := json.Marshal(record)
+	return shim.Success(payload)
+}
+
+// RecordSARFiled writes a tamper-evident SAR_FILED record to the audit-channel when a
+// Suspicious Activity Report is generated and uploaded to S3. The sarHash (SHA-256 of
+// the PDF content) proves the document has not been altered after filing.
+//
+// args: recordID, caseID, sarHash, s3Key, filedAt (RFC3339), generatedBy
+func (c *AuditChaincode) RecordSARFiled(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	const expectedArgs = 6
+	if len(args) != expectedArgs {
+		return shim.Error(fmt.Sprintf(
+			"RecordSARFiled requires %d arguments: recordID, caseID, sarHash, s3Key, filedAt, generatedBy",
+			expectedArgs,
+		))
+	}
+
+	recordID    := strings.TrimSpace(args[0])
+	caseID      := strings.TrimSpace(args[1])
+	sarHash     := strings.TrimSpace(args[2])
+	s3Key       := strings.TrimSpace(args[3])
+	filedAt     := strings.TrimSpace(args[4])
+	generatedBy := strings.TrimSpace(args[5])
+
+	if err := validateAuditID(caseID, "caseID"); err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := validateAuditID(sarHash, "sarHash"); err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := validateAuditID(s3Key, "s3Key"); err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := validateAuditID(generatedBy, "generatedBy"); err != nil {
+		return shim.Error(err.Error())
+	}
+	if _, err := time.Parse(time.RFC3339, filedAt); err != nil {
+		return shim.Error("filedAt must be RFC3339 format (e.g. 2006-01-02T15:04:05Z)")
+	}
+
+	record, err := newAuditRecord(
+		stub,
+		recordID,
+		"SAR_FILED",
+		caseID,
+		"CASE",
+		generatedBy,
+		fmt.Sprintf("SAR filed for case %s — document hash anchored on-chain", caseID),
+		map[string]string{
+			"caseID":      caseID,
+			"sarHash":     sarHash,
+			"s3Key":       s3Key,
+			"filedAt":     filedAt,
+			"generatedBy": generatedBy,
 		},
 	)
 	if err != nil {
@@ -253,6 +442,10 @@ func (c *AuditChaincode) GetComplianceReport(stub shim.ChaincodeStubInterface, a
 			report.InvestigatorActions++
 		case "MODEL_PREDICTION":
 			report.ModelPredictions++
+		case "TRANSACTION_PROCESSED":
+			report.TransactionsProcessed++
+		case "SAR_FILED":
+			report.SARsFiled++
 		}
 		if len(report.SampleRecords) < 10 {
 			recordCopy := record

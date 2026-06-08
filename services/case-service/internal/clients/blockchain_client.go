@@ -136,6 +136,68 @@ func (c *BlockchainClient) UpdateAlertStatus(
 	return result.TransactionID, nil
 }
 
+// sarFiledPayload matches blockchain-service/domain.SARFiledRequest.
+type sarFiledPayload struct {
+	RecordID    string `json:"record_id"`
+	CaseID      string `json:"case_id"`
+	SARHash     string `json:"sar_hash"`
+	S3Key       string `json:"s3_key"`
+	FiledAt     string `json:"filed_at"`
+	GeneratedBy string `json:"generated_by"`
+}
+
+// RecordSARFiled anchors the SAR document hash on the Fabric audit-channel.
+// Returns the Fabric transaction ID on success.
+func (c *BlockchainClient) RecordSARFiled(
+	ctx context.Context,
+	caseID, sarHash, s3Key, filedAt, generatedBy string,
+) (string, error) {
+	payload := sarFiledPayload{
+		RecordID:    caseID + "-sar",
+		CaseID:      caseID,
+		SARHash:     sarHash,
+		S3Key:       s3Key,
+		FiledAt:     filedAt,
+		GeneratedBy: generatedBy,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal SAR payload: %w", err)
+	}
+
+	url := c.baseURL + "/internal/v1/audit/sar-filed"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build SAR anchor request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Warn().Err(err).Str("case_id", caseID).
+			Msg("blockchain service unreachable — SAR hash not anchored")
+		return "", fmt.Errorf("blockchain http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("blockchain service returned HTTP %d for SAR anchor", resp.StatusCode)
+	}
+
+	var result transactionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode SAR anchor response: %w", err)
+	}
+
+	log.Info().
+		Str("blockchain_tx_id", result.TransactionID).
+		Str("case_id", caseID).
+		Str("sar_hash", sarHash).
+		Msg("SAR hash recorded on Fabric audit-channel")
+
+	return result.TransactionID, nil
+}
+
 // Ping checks connectivity to the Blockchain Service.
 func (c *BlockchainClient) Ping(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)

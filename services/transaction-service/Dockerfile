@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /workspace
 
@@ -8,14 +8,11 @@ RUN apk add --no-cache git ca-certificates tzdata
 
 # Copy go workspace files (required for replace directives)
 COPY go.work go.work.sum ./
-COPY proto/gen/go/go.mod proto/gen/go/go.mod
-COPY shared/go/go.mod shared/go/go.sum shared/go/
-
-# Copy service and its dependencies
-COPY services/transaction-service/go.mod services/transaction-service/go.sum ./services/transaction-service/
 COPY proto/gen/go/ ./proto/gen/go/
 COPY shared/go/ ./shared/go/
 COPY services/transaction-service/ ./services/transaction-service/
+
+RUN printf 'go 1.25.0\n\nuse (\n\t./services/transaction-service\n\t./shared/go\n\t./proto/gen/go\n)\n' > go.work
 
 WORKDIR /workspace/services/transaction-service
 

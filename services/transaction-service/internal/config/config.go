@@ -58,6 +58,9 @@ type Config struct {
 
 	// --- Feature pipeline ---
 	PipelineVersion string // semantic version of feature pipeline, e.g. "1.0.0"
+
+	// --- Blockchain Service ---
+	BlockchainServiceAddr string // HTTP base URL for blockchain-service audit endpoint
 }
 
 // Load reads configuration from environment variables and validates required fields.
@@ -97,6 +100,8 @@ func Load() (*Config, error) {
 		JaegerEndpoint:  env("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"),
 		JWTSecret:       envRequired("INTERNAL_JWT_SECRET"),
 		PipelineVersion: env("PIPELINE_VERSION", "1.0.0"),
+
+		BlockchainServiceAddr: env("BLOCKCHAIN_SERVICE_ADDR", "http://localhost:8095"),
 	}
 
 	if cfg.JWTSecret == "" {

@@ -159,6 +159,16 @@ func (m *mockAlertPublisher) PublishAlert(_ context.Context, alert *domain.Alert
 
 func (m *mockAlertPublisher) Close() error { return nil }
 
+// -----
+
+type mockBlockchainAnchor struct {
+	anchored []*domain.EnrichedTransaction
+}
+
+func (m *mockBlockchainAnchor) AnchorTransactionReceipt(enriched *domain.EnrichedTransaction) {
+	m.anchored = append(m.anchored, enriched)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -169,13 +179,18 @@ func buildSvc(
 	txStore service.TransactionStore,
 	velStore service.VelocityStore,
 	alertPub service.AlertPublisher,
+	anchor ...service.BlockchainAnchor,
 ) *service.TransactionService {
 	cfg := service.Config{
 		AlertThreshold:   0.7,
 		Velocity1HLimit:  20,
 		Velocity24HLimit: 100,
 	}
-	return service.NewTransactionService(extractor, predictor, txStore, velStore, alertPub, cfg, zerolog.Nop())
+	var blockchainAnchor service.BlockchainAnchor
+	if len(anchor) > 0 {
+		blockchainAnchor = anchor[0]
+	}
+	return service.NewTransactionService(extractor, predictor, txStore, velStore, alertPub, blockchainAnchor, cfg, zerolog.Nop())
 }
 
 func sampleRaw() *domain.RawTransaction {
@@ -446,4 +461,48 @@ type failingPingStore struct{ mockTxStore }
 
 func (f *failingPingStore) Ping(_ context.Context) error {
 	return errors.New("connection refused")
+}
+
+// ---------------------------------------------------------------------------
+// BlockchainAnchor integration tests
+// ---------------------------------------------------------------------------
+
+func TestProcessTransaction_BlockchainAnchor_CalledAfterPersist(t *testing.T) {
+	anchor := &mockBlockchainAnchor{}
+	txStore := &mockTxStore{}
+	svc := buildSvc(&mockExtractor{}, &mockPredictor{}, txStore, &mockVelocityStore{}, &mockAlertPublisher{}, anchor)
+
+	result, err := svc.ProcessTransaction(context.Background(), sampleRaw())
+	require.NoError(t, err)
+
+	// Anchor must receive the same enriched record that was persisted.
+	require.Len(t, anchor.anchored, 1)
+	assert.Equal(t, result.TxHash, anchor.anchored[0].TxHash)
+	assert.Equal(t, result.FraudProbability, anchor.anchored[0].FraudProbability)
+}
+
+func TestProcessTransaction_BlockchainAnchor_CalledEvenOnHighFraud(t *testing.T) {
+	anchor := &mockBlockchainAnchor{}
+	predictor := &mockPredictor{
+		prediction: &domain.FraudPrediction{
+			FraudProbability: 0.95,
+			IsFraud:          true,
+			RiskLevel:        domain.RiskLevelCritical,
+			ModelVersion:     "ensemble-v2",
+			PredictedAt:      time.Now().UTC(),
+		},
+	}
+	svc := buildSvc(&mockExtractor{}, predictor, &mockTxStore{}, &mockVelocityStore{}, &mockAlertPublisher{}, anchor)
+
+	_, err := svc.ProcessTransaction(context.Background(), sampleRaw())
+	require.NoError(t, err)
+	// Anchor must fire for fraudulent transactions too.
+	assert.Len(t, anchor.anchored, 1)
+}
+
+func TestProcessTransaction_BlockchainAnchor_NilAnchor_NooPanic(t *testing.T) {
+	// No anchor passed — service must not panic.
+	svc := buildSvc(&mockExtractor{}, &mockPredictor{}, &mockTxStore{}, &mockVelocityStore{}, &mockAlertPublisher{})
+	_, err := svc.ProcessTransaction(context.Background(), sampleRaw())
+	require.NoError(t, err)
 }

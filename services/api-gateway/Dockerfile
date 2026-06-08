@@ -5,20 +5,23 @@
 # =============================================================================
 
 # --- Builder -----------------------------------------------------------------
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /workspace
 
 RUN apk add --no-cache git
 
-# Copy the entire Go workspace so module replacements resolve correctly.
+# Copy only the modules this service depends on.
 COPY go.work go.work.sum* ./
-COPY shared/           shared/
+COPY shared/go/        shared/go/
 COPY proto/gen/go/     proto/gen/go/
 COPY services/api-gateway/ services/api-gateway/
 
-# Download dependencies declared by the workspace.
-RUN go work sync
+# Replace the workspace file with a minimal one that only references
+# the three modules present in this build context.
+RUN printf 'go 1.25.0\n\nuse (\n\t./services/api-gateway\n\t./shared/go\n\t./proto/gen/go\n)\n' > go.work
+
+RUN cd services/api-gateway && go mod download
 
 # Build a statically linked binary (no CGO).
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \

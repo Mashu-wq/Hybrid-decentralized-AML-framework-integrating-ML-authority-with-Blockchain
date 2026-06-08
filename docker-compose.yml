@@ -642,6 +642,343 @@ services:
       start_period: 15s
 
   # ===========================================================================
+  # ML Service — FastAPI REST + gRPC, ensemble fraud models (Python)
+  # ===========================================================================
+  ml-service:
+    build:
+      context: .
+      dockerfile: services/ml-service/Dockerfile
+    container_name: fds-ml-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: ml-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HTTP_PORT: ${ML_SERVICE_HTTP_PORT:-8000}
+      GRPC_PORT: ${ML_SERVICE_GRPC_PORT:-50051}
+      MODEL_ARTIFACT_PATH: /workspace/ml/artifacts
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      IAM_SERVICE_HOST: iam-service
+      IAM_SERVICE_GRPC_PORT: ${IAM_SERVICE_GRPC_PORT:-50060}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    volumes:
+      - ./ml/artifacts:/workspace/ml/artifacts:ro
+    ports:
+      - "${ML_SERVICE_HTTP_PORT:-8000}:8000"
+      - "${ML_SERVICE_GRPC_PORT:-50051}:50051"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.68
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      iam-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    logging: *default-logging
+
+  # ===========================================================================
+  # KYC Service — Customer onboarding, document verification, Fabric writes
+  # ===========================================================================
+  kyc-service:
+    build:
+      context: .
+      dockerfile: services/kyc-service/Dockerfile
+    container_name: fds-kyc-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: kyc-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      KYC_SERVICE_PORT: ${KYC_SERVICE_PORT:-9001}
+      KYC_SERVICE_GRPC_PORT: ${KYC_SERVICE_GRPC_PORT:-50061}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_strong_password}
+      POSTGRES_SSL_MODE: disable
+      KAFKA_BROKERS: kafka:29092
+      KYC_EVENTS_TOPIC: kyc.events
+      ENCRYPTION_SERVICE_ADDR: encryption-service:${ENCRYPTION_SERVICE_GRPC_PORT:-50066}
+      BLOCKCHAIN_SERVICE_ADDR: blockchain-service:${BLOCKCHAIN_SERVICE_PORT:-9005}
+      DOCUMENT_UPLOAD_DIR: /tmp/kyc-uploads
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    volumes:
+      - /tmp/fds-kyc-uploads:/tmp/kyc-uploads
+    ports:
+      - "${KYC_SERVICE_PORT:-9001}:9001"
+      - "${KYC_SERVICE_GRPC_PORT:-50061}:50061"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.62
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      encryption-service:
+        condition: service_healthy
+      blockchain-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  # ===========================================================================
+  # Transaction Service — Kafka consumer, feature extraction, ML prediction
+  # ===========================================================================
+  transaction-service:
+    build:
+      context: .
+      dockerfile: services/transaction-service/Dockerfile
+    container_name: fds-transaction-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: transaction-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TRANSACTION_SERVICE_GRPC_PORT: ${TX_SERVICE_GRPC_PORT:-50062}
+      TX_SERVICE_PORT: ${TX_SERVICE_PORT:-9002}
+      KAFKA_BROKERS: kafka:29092
+      TRANSACTIONS_RAW_TOPIC: transactions.raw
+      ALERTS_CREATED_TOPIC: alerts.created
+      KAFKA_CONSUMER_GROUP: transaction-service-cg
+      MONGO_URI: mongodb://${MONGO_USER:-mongo_user}:${MONGO_PASSWORD:-changeme_strong_password}@mongodb:27017/${MONGO_DB:-fraud_detection}?authSource=admin
+      MONGO_DB: ${MONGO_DB:-fraud_detection}
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme_redis_password}
+      REDIS_DB: 0
+      ML_SERVICE_ADDR: ml-service:${ML_SERVICE_GRPC_PORT:-50051}
+      IAM_SERVICE_ADDR: iam-service:${IAM_SERVICE_GRPC_PORT:-50060}
+      FRAUD_ALERT_THRESHOLD: ${FRAUD_ALERT_THRESHOLD:-0.7}
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-${JWT_SECRET}}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${TX_SERVICE_PORT:-9002}:9002"
+      - "${TX_SERVICE_GRPC_PORT:-50062}:50062"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.63
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+      iam-service:
+        condition: service_healthy
+    logging: *default-logging
+
+  # ===========================================================================
+  # Alert Service — Kafka consumer, WebSocket notifications, alert persistence
+  # ===========================================================================
+  alert-service:
+    build:
+      context: .
+      dockerfile: services/alert-service/Dockerfile
+    container_name: fds-alert-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: alert-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ALERT_SERVICE_PORT: ${ALERT_SERVICE_PORT:-9003}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_strong_password}
+      POSTGRES_SSL_MODE: disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme_redis_password}
+      REDIS_DB: 0
+      KAFKA_BROKERS: kafka:29092
+      ALERTS_CREATED_TOPIC: alerts.created
+      KAFKA_CONSUMER_GROUP: alert-service-cg
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${ALERT_SERVICE_PORT:-9003}:9003"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.64
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    logging: *default-logging
+
+  # ===========================================================================
+  # Case Service — Case management, SAR generation, investigator assignment
+  # ===========================================================================
+  case-service:
+    build:
+      context: .
+      dockerfile: services/case-service/Dockerfile
+    container_name: fds-case-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: case-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CASE_SERVICE_PORT: ${CASE_SERVICE_PORT:-9004}
+      CASE_SERVICE_GRPC_PORT: ${CASE_SERVICE_GRPC_PORT:-10004}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_strong_password}
+      POSTGRES_SSL_MODE: disable
+      KAFKA_BROKERS: kafka:29092
+      ALERTS_CREATED_TOPIC: alerts.created
+      KAFKA_CONSUMER_GROUP: case-service-cg
+      BLOCKCHAIN_SERVICE_URL: http://blockchain-service:${BLOCKCHAIN_SERVICE_PORT:-9005}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${CASE_SERVICE_PORT:-9004}:9004"
+      - "${CASE_SERVICE_GRPC_PORT:-10004}:10004"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.65
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      blockchain-service:
+        condition: service_started
+    logging: *default-logging
+
+  # ===========================================================================
+  # Blockchain Service — Hyperledger Fabric SDK wrapper (HTTP REST)
+  # Peers are on a separate Docker network; extra_hosts routes their hostnames
+  # to the Docker host so port-mapped Fabric peers are reachable.
+  # ===========================================================================
+  blockchain-service:
+    build:
+      context: .
+      dockerfile: services/blockchain-service/Dockerfile
+    container_name: fds-blockchain-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BLOCKCHAIN_SERVICE_NAME: blockchain-service
+      BLOCKCHAIN_ENV: ${ENVIRONMENT:-development}
+      BLOCKCHAIN_LOG_LEVEL: ${LOG_LEVEL:-info}
+      BLOCKCHAIN_HTTP_PORT: ${BLOCKCHAIN_HTTP_PORT:-9005}
+      BLOCKCHAIN_CONNECTION_PROFILE: /etc/fabric/connection-profiles/org1.yaml
+      BLOCKCHAIN_CRYPTO_CONFIG: /etc/fabric/crypto-config
+      BLOCKCHAIN_MSP_ID: Org1MSP
+      BLOCKCHAIN_ORG_NAME: Org1
+      BLOCKCHAIN_ORG_DOMAIN: org1.fraud-detection.example.com
+      BLOCKCHAIN_PEER_HOST: peer0.org1.fraud-detection.example.com
+      BLOCKCHAIN_PEER_PORT: "7051"
+      BLOCKCHAIN_PEER_ENDPOINT: peer0.org1.fraud-detection.example.com:7051
+      BLOCKCHAIN_GATEWAY_HOSTNAME_OVERRIDE: peer0.org1.fraud-detection.example.com
+      BLOCKCHAIN_KYC_CHANNEL: kyc-channel
+      BLOCKCHAIN_ALERT_CHANNEL: alert-channel
+      BLOCKCHAIN_AUDIT_CHANNEL: audit-channel
+      BLOCKCHAIN_KYC_CHAINCODE: kyc-contract
+      BLOCKCHAIN_ALERT_CHAINCODE: alert-contract
+      BLOCKCHAIN_AUDIT_CHAINCODE: audit-contract
+      KAFKA_BROKERS: kafka:29092
+      BLOCKCHAIN_EVENT_TOPIC: blockchain.events
+    volumes:
+      - ./blockchain/network/connection-profiles:/etc/fabric/connection-profiles:ro
+      - ./blockchain/network/crypto-config:/etc/fabric/crypto-config:ro
+      - ./services/blockchain-service/keystore:/etc/fabric/keystore:ro
+    extra_hosts:
+      - "peer0.org1.fraud-detection.example.com:host-gateway"
+      - "peer1.org1.fraud-detection.example.com:host-gateway"
+      - "peer0.org2.fraud-detection.example.com:host-gateway"
+      - "peer1.org2.fraud-detection.example.com:host-gateway"
+      - "peer0.org3.fraud-detection.example.com:host-gateway"
+      - "peer1.org3.fraud-detection.example.com:host-gateway"
+      - "orderer0.fraud-detection.example.com:host-gateway"
+      - "orderer1.fraud-detection.example.com:host-gateway"
+      - "orderer2.fraud-detection.example.com:host-gateway"
+    ports:
+      - "${BLOCKCHAIN_SERVICE_PORT:-9005}:9005"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.66
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9005/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  # ===========================================================================
+  # Analytics Service — Reports, metrics aggregation (HTTP + gRPC)
+  # ===========================================================================
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+    container_name: fds-analytics-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: analytics-service
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ANALYTICS_SERVICE_PORT: ${ANALYTICS_SERVICE_PORT:-9006}
+      ANALYTICS_GRPC_PORT: 9008
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_strong_password}
+      POSTGRES_SSL_MODE: disable
+      MONGO_URI: mongodb://${MONGO_USER:-mongo_user}:${MONGO_PASSWORD:-changeme_strong_password}@mongodb:27017/${MONGO_DB:-fraud_detection}?authSource=admin
+      MONGO_DB: ${MONGO_DB:-fraud_detection}
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-${JWT_SECRET}}
+      JAEGER_ENDPOINT: http://jaeger:14268/api/traces
+    ports:
+      - "${ANALYTICS_SERVICE_PORT:-9006}:9006"
+      - "9008:9008"
+    networks:
+      fraud-net:
+        ipv4_address: 172.20.0.67
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9006/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  # ===========================================================================
   # pgAdmin — PostgreSQL management UI (dev only)
   # ===========================================================================
   pgadmin:

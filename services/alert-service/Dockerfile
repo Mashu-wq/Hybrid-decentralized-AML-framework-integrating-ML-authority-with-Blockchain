@@ -1,7 +1,7 @@
 # ============================================================================
 # Stage 1 — builder
 # ============================================================================
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
@@ -12,6 +12,8 @@ COPY go.work go.work.sum ./
 COPY proto/gen/go/ proto/gen/go/
 COPY shared/go/ shared/go/
 COPY services/alert-service/ services/alert-service/
+
+RUN printf 'go 1.25.0\n\nuse (\n\t./services/alert-service\n\t./shared/go\n\t./proto/gen/go\n)\n' > go.work
 
 WORKDIR /workspace/services/alert-service
 

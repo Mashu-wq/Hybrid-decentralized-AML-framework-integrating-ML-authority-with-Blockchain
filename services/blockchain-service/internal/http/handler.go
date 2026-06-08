@@ -46,6 +46,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Audit writes
 	mux.HandleFunc("/internal/v1/audit/investigator-action", h.handleInvestigatorAction)
 	mux.HandleFunc("/internal/v1/audit/model-prediction", h.handleModelPrediction)
+	mux.HandleFunc("/internal/v1/audit/transaction-receipt", h.handleTransactionReceipt)
+	mux.HandleFunc("/internal/v1/audit/sar-filed", h.handleSARFiled)
 
 	// Audit reads
 	mux.HandleFunc("/internal/v1/audit/trail", h.handleGetAuditTrail)
@@ -131,6 +133,26 @@ func (h *Handler) handleModelPrediction(w http.ResponseWriter, r *http.Request) 
 			return nil, err
 		}
 		return h.svc.RecordModelPrediction(ctx, req)
+	})
+}
+
+func (h *Handler) handleTransactionReceipt(w http.ResponseWriter, r *http.Request) {
+	h.handleJSON(w, r, func(ctx context.Context) (interface{}, error) {
+		var req domain.TransactionReceiptRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		return h.svc.RecordTransactionReceipt(ctx, req)
+	})
+}
+
+func (h *Handler) handleSARFiled(w http.ResponseWriter, r *http.Request) {
+	h.handleJSON(w, r, func(ctx context.Context) (interface{}, error) {
+		var req domain.SARFiledRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		return h.svc.RecordSARFiled(ctx, req)
 	})
 }
 

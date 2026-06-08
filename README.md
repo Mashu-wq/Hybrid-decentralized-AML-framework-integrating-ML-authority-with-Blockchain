@@ -132,7 +132,6 @@ fraud-detection-system/
 │   ├── features/             # Feature engineering pipeline
 │   ├── models/               # RF, XGBoost, LightGBM, GNN, Autoencoder, Ensemble
 │   ├── explainability/       # SHAP + LIME
-│   ├── federated/            # Federated learning stub
 │   └── evaluation/           # Benchmarks and comparison table
 ├── proto/                    # gRPC .proto definitions
 ├── infrastructure/

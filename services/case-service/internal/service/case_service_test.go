@@ -212,6 +212,12 @@ func (m *mockBlockchain) RecordInvestigatorAction(_ context.Context, actionID, _
 func (m *mockBlockchain) UpdateAlertStatus(_ context.Context, _, _, _, _ string) (string, error) {
 	return "fabric-tx-alert", nil
 }
+func (m *mockBlockchain) RecordSARFiled(_ context.Context, caseID, sarHash, _, _, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recorded = append(m.recorded, "SAR_FILED:"+caseID+":"+sarHash)
+	return "fabric-tx-sar", nil
+}
 func (m *mockBlockchain) Ping(_ context.Context) error { return m.pingErr }
 
 // ---------------------------------------------------------------------------

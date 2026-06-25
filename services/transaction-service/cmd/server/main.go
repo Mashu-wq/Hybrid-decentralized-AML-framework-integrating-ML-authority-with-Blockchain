@@ -181,7 +181,12 @@ func run() error {
 		alertProducer,
 		blockchainAnchor,
 		service.Config{
-			AlertThreshold:   cfg.FraudAlertThreshold,
+			AlertThresholds: map[domain.RiskLevel]float64{
+				domain.RiskLevelLow:      cfg.AlertThresholdLow,
+				domain.RiskLevelMedium:   cfg.AlertThresholdMedium,
+				domain.RiskLevelHigh:     cfg.AlertThresholdHigh,
+				domain.RiskLevelCritical: cfg.AlertThresholdCritical,
+			},
 			Velocity1HLimit:  cfg.VelocityAlert1HLimit,
 			Velocity24HLimit: cfg.VelocityAlert24HLimit,
 		},
@@ -247,7 +252,10 @@ func run() error {
 	log.Info().
 		Int("grpc_port", cfg.GRPCPort).
 		Int("http_port", cfg.HTTPPort).
-		Float64("alert_threshold", cfg.FraudAlertThreshold).
+		Float64("threshold_low",      cfg.AlertThresholdLow).
+		Float64("threshold_medium",   cfg.AlertThresholdMedium).
+		Float64("threshold_high",     cfg.AlertThresholdHigh).
+		Float64("threshold_critical", cfg.AlertThresholdCritical).
 		Msg("transaction-service ready")
 
 	// Block until signal or fatal error

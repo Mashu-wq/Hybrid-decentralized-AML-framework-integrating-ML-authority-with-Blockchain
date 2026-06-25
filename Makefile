@@ -478,15 +478,15 @@ clean-proto: ## Remove generated protobuf stubs
 .PHONY: health
 health: ## Check health of all running services
 	@echo "$(BLUE)► Checking service health...$(RESET)"
-	@echo "PostgreSQL:  $$(docker exec fds-postgres pg_isready -U fraud_user 2>/dev/null && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
-	@echo "MongoDB:     $$(docker exec fds-mongodb mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' 2>/dev/null | grep -q 1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
-	@echo "Redis:       $$(docker exec fds-redis redis-cli -a changeme_redis_password ping 2>/dev/null | grep -q PONG && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
-	@echo "Kafka:       $$(docker exec fds-kafka kafka-broker-api-versions --bootstrap-server localhost:9092 2>/dev/null | grep -q 'ApiKey' && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
-	@echo "Vault:       $$(curl -sf http://localhost:8200/v1/sys/health 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"$(GREEN)OK$(RESET)\")' 2>/dev/null || echo '$(RED)DOWN$(RESET)')"
+	@echo "PostgreSQL:  $$(docker exec fds-postgres pg_isready -U $${POSTGRES_USER:-fraud_user} 2>/dev/null && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
+	@echo "MongoDB:     $$(docker inspect --format='{{.State.Health.Status}}' fds-mongodb 2>/dev/null | grep -q healthy && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
+	@echo "Redis:       $$(docker exec fds-redis redis-cli -a $${REDIS_PASSWORD:-changeme_redis_password} ping 2>/dev/null | grep -q PONG && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
+	@echo "Kafka:       $$(docker exec fds-kafka kafka-topics --bootstrap-server kafka:29092 --list 2>/dev/null | grep -q 'transactions.raw' && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
+	@echo "Vault:       $$(curl -sf http://localhost:8200/v1/sys/health >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
 	@echo "Jaeger:      $$(curl -sf http://localhost:16686/ >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
 	@echo "Prometheus:  $$(curl -sf http://localhost:9090/-/healthy >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
 	@echo "Grafana:     $$(curl -sf http://localhost:3000/api/health >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
-	@echo "MLflow:      $$(curl -sf http://localhost:5000/health >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
+	@echo "MLflow:      $$(curl -sf http://localhost:5000/ >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
 	@echo "API Gateway: $$(curl -sf http://localhost:8080/health >/dev/null 2>&1 && echo '$(GREEN)OK$(RESET)' || echo '$(RED)DOWN$(RESET)')"
 
 # Create coverage directory if it doesn't exist

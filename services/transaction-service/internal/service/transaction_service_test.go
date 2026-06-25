@@ -182,7 +182,12 @@ func buildSvc(
 	anchor ...service.BlockchainAnchor,
 ) *service.TransactionService {
 	cfg := service.Config{
-		AlertThreshold:   0.7,
+		AlertThresholds: map[domain.RiskLevel]float64{
+			domain.RiskLevelLow:      0.70,
+			domain.RiskLevelMedium:   0.55,
+			domain.RiskLevelHigh:     0.40,
+			domain.RiskLevelCritical: 0.25,
+		},
 		Velocity1HLimit:  20,
 		Velocity24HLimit: 100,
 	}
@@ -267,10 +272,21 @@ func TestProcessTransaction_HighFraudProb_CreatesAlert(t *testing.T) {
 }
 
 func TestProcessTransaction_ExactlyAtThreshold_NoAlert(t *testing.T) {
-	// Threshold is 0.7 — strictly greater than triggers alert.
+	// LOW-risk customer threshold is 0.70 — probability == threshold must NOT fire.
+	extractor := &mockExtractor{
+		features: &domain.TransactionFeatures{
+			TxHash:         "tx-abc-123",
+			CustomerID:     "cust-001",
+			Amount:         500,
+			CurrencyCode:   "USD",
+			AmountUSDEquiv: 500,
+			CountryCode:    "US",
+			KYCRiskLevel:   int(domain.RiskLevelLow), // LOW → threshold 0.70
+		},
+	}
 	predictor := &mockPredictor{
 		prediction: &domain.FraudPrediction{
-			FraudProbability: 0.7,
+			FraudProbability: 0.70, // exactly at LOW threshold — should NOT alert
 			IsFraud:          false,
 			RiskLevel:        domain.RiskLevelHigh,
 			ModelVersion:     "test-v1",
@@ -278,12 +294,44 @@ func TestProcessTransaction_ExactlyAtThreshold_NoAlert(t *testing.T) {
 		},
 	}
 	alertPub := &mockAlertPublisher{}
-	svc := buildSvc(&mockExtractor{}, predictor, &mockTxStore{}, &mockVelocityStore{}, alertPub)
+	svc := buildSvc(extractor, predictor, &mockTxStore{}, &mockVelocityStore{}, alertPub)
 
 	result, err := svc.ProcessTransaction(context.Background(), sampleRaw())
 	require.NoError(t, err)
 	assert.False(t, result.AlertCreated, "probability == threshold should NOT create alert")
 	assert.Len(t, alertPub.published, 0)
+}
+
+func TestProcessTransaction_HighRiskCustomer_AlertsAtLowerThreshold(t *testing.T) {
+	// HIGH-risk customer threshold is 0.40 — a probability of 0.45 must trigger alert,
+	// whereas the same probability would be silent for a LOW-risk customer (threshold 0.70).
+	extractor := &mockExtractor{
+		features: &domain.TransactionFeatures{
+			TxHash:         "tx-highrisk-001",
+			CustomerID:     "cust-highrisk",
+			Amount:         1000,
+			CurrencyCode:   "USD",
+			AmountUSDEquiv: 1000,
+			CountryCode:    "US",
+			KYCRiskLevel:   int(domain.RiskLevelHigh), // HIGH → threshold 0.40
+		},
+	}
+	predictor := &mockPredictor{
+		prediction: &domain.FraudPrediction{
+			FraudProbability: 0.45, // above HIGH threshold (0.40) but below LOW threshold (0.70)
+			IsFraud:          false,
+			RiskLevel:        domain.RiskLevelMedium,
+			ModelVersion:     "test-v1",
+			PredictedAt:      time.Now().UTC(),
+		},
+	}
+	alertPub := &mockAlertPublisher{}
+	svc := buildSvc(extractor, predictor, &mockTxStore{}, &mockVelocityStore{}, alertPub)
+
+	result, err := svc.ProcessTransaction(context.Background(), sampleRaw())
+	require.NoError(t, err)
+	assert.True(t, result.AlertCreated, "HIGH-risk customer with prob=0.45 should trigger alert at threshold=0.40")
+	require.Len(t, alertPub.published, 1)
 }
 
 func TestProcessTransaction_InvalidTransaction_ReturnsError(t *testing.T) {

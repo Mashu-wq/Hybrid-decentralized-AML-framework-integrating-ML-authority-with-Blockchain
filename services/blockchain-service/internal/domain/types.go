@@ -13,6 +13,7 @@ type RegisterKYCRequest struct {
 type UpdateKYCStatusRequest struct {
 	CustomerID string `json:"customer_id"`
 	KYCStatus  string `json:"kyc_status"`
+	RiskLevel  string `json:"risk_level,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	VerifierID string `json:"verifier_id,omitempty"`
 }

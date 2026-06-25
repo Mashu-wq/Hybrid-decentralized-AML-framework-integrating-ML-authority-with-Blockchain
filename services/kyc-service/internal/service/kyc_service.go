@@ -390,7 +390,7 @@ func (s *KYCService) UpdateKYCStatus(ctx context.Context, in *UpdateKYCStatusInp
 	go func() {
 		bcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		txID, err := s.blockchain.UpdateKYCOnChain(bcCtx, in.CustomerID, in.Status, in.Reason, in.VerifierID)
+		txID, err := s.blockchain.UpdateKYCOnChain(bcCtx, in.CustomerID, in.Status, in.RiskLevel, in.Reason, in.VerifierID)
 		if err != nil {
 			s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("blockchain update failed (non-fatal)")
 			return

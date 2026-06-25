@@ -86,16 +86,20 @@ type TransactionService struct {
 	blockchainAnchor BlockchainAnchor
 	log              zerolog.Logger
 
-	alertThreshold   float64 // publish alert if fraud_prob > this
+	// alertThresholds is keyed by customer KYC risk level.
+	// Higher-risk customers use lower thresholds (higher recall) per FATF Recommendation 1.
+	alertThresholds  map[domain.RiskLevel]float64
 	velocity1HLimit  int
 	velocity24HLimit int
 }
 
 // Config holds TransactionService configuration.
 type Config struct {
-	AlertThreshold    float64
-	Velocity1HLimit   int
-	Velocity24HLimit  int
+	// AlertThresholds maps each customer KYC risk level to its fraud alert threshold.
+	// Fraud probability must strictly exceed the threshold to trigger an alert.
+	AlertThresholds  map[domain.RiskLevel]float64
+	Velocity1HLimit  int
+	Velocity24HLimit int
 }
 
 // NewTransactionService constructs a fully wired TransactionService.
@@ -117,7 +121,7 @@ func NewTransactionService(
 		alertPublisher:   alertPublisher,
 		blockchainAnchor: blockchainAnchor,
 		log:              log.With().Str("component", "transaction_service").Logger(),
-		alertThreshold:   cfg.AlertThreshold,
+		alertThresholds:  cfg.AlertThresholds,
 		velocity1HLimit:  cfg.Velocity1HLimit,
 		velocity24HLimit: cfg.Velocity24HLimit,
 	}
@@ -209,7 +213,13 @@ func (s *TransactionService) ProcessTransaction(ctx context.Context, raw *domain
 	}
 
 	// --- Step 5: Publish alert (if above threshold) ---
-	if prediction.FraudProbability > s.alertThreshold {
+	// Threshold is selected by the customer's KYC risk level from the feature pipeline.
+	// This implements the FATF risk-based approach: high-risk customers are monitored
+	// with lower thresholds (higher recall); low-risk customers with higher thresholds
+	// (fewer false positives). KYC risk level is read from the blockchain KYC channel
+	// via Redis cache during feature extraction.
+	threshold := s.thresholdForRisk(domain.RiskLevel(f.KYCRiskLevel))
+	if prediction.FraudProbability > threshold {
 		alertEvent, err := s.buildAlertEvent(enriched, prediction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to build alert event; skipping alert")
@@ -380,6 +390,18 @@ func (s *TransactionService) buildAlertEvent(enriched *domain.EnrichedTransactio
 		FeaturesSnapshotJSON: featuresJSON,
 		CreatedAt:            enriched.ProcessedAt,
 	}, nil
+}
+
+// thresholdForRisk returns the alert threshold for the given customer KYC risk level.
+// Falls back to the medium threshold if the level is not in the map (e.g. Unspecified).
+func (s *TransactionService) thresholdForRisk(level domain.RiskLevel) float64 {
+	if t, ok := s.alertThresholds[level]; ok {
+		return t
+	}
+	if t, ok := s.alertThresholds[domain.RiskLevelMedium]; ok {
+		return t
+	}
+	return 0.55 // absolute fallback — should never be reached with a properly wired service
 }
 
 // fraudProbToScore converts a [0,1] fraud probability to a [0,100] risk score.

@@ -156,18 +156,22 @@ func (c *KYCChaincode) RegisterCustomer(stub shim.ChaincodeStubInterface, args [
 }
 
 func (c *KYCChaincode) UpdateKYCStatus(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	if len(args) != 3 {
-		return shim.Error("UpdateKYCStatus requires 3 arguments: customerID, newStatus, reason")
+	if len(args) != 4 {
+		return shim.Error("UpdateKYCStatus requires 4 arguments: customerID, newStatus, riskLevel, reason")
 	}
 
 	customerID := strings.TrimSpace(args[0])
 	newStatus := normalizeEnum(args[1])
-	reason := strings.TrimSpace(args[2])
+	riskLevel := normalizeEnum(args[2])
+	reason := strings.TrimSpace(args[3])
 
 	if err := validateCustomerID(customerID); err != nil {
 		return shim.Error(err.Error())
 	}
 	if err := validateKYCStatus(newStatus); err != nil {
+		return shim.Error(err.Error())
+	}
+	if err := validateRiskLevel(riskLevel); err != nil {
 		return shim.Error(err.Error())
 	}
 	if requiresReason(newStatus) && reason == "" {
@@ -189,6 +193,11 @@ func (c *KYCChaincode) UpdateKYCStatus(stub shim.ChaincodeStubInterface, args []
 
 	oldStatus := record.KYCStatus
 	record.KYCStatus = newStatus
+	// Only update riskLevel when a real value is provided; preserve the existing
+	// level on SUSPEND/REJECT calls that don't carry a new classification.
+	if riskLevel != "" && riskLevel != "UNSPECIFIED" {
+		record.RiskLevel = riskLevel
+	}
 	record.Reason = reason
 	record.UpdatedAt = now
 	record.TxID = stub.GetTxID()

@@ -33,11 +33,13 @@ class AutoencoderModel(FraudModel):
         hidden_dims: tuple[int, ...] = (64, 32, 16),
         dropout: float = 0.2,
         threshold_k: float = 3.0,  # mean + k*std of licit errors
+        inverted: bool = False,     # True when low error = fraud (Elliptic dataset)
     ) -> None:
         self._input_dim   = input_dim
         self._hidden_dims = hidden_dims
         self._dropout     = dropout
         self._threshold_k = threshold_k
+        self._inverted    = inverted
         self._model       = None
         self._threshold: Optional[float] = None
         self._feature_names = SELECTED_FEATURE_NAMES.copy()
@@ -172,8 +174,14 @@ class AutoencoderModel(FraudModel):
         errors = self._reconstruction_errors(X)
         threshold = self._threshold or float(errors.mean())
 
-        # Sigmoid squash of deviation from threshold
-        deviation = errors - threshold
+        # Inverted mode: fraud has LOWER reconstruction error than licit.
+        # This is the observed behaviour on the Elliptic dataset where fraud
+        # transactions have simpler, more uniform feature patterns.
+        if self._inverted:
+            deviation = threshold - errors   # low error → positive deviation → high p_fraud
+        else:
+            deviation = errors - threshold   # high error → positive deviation → high p_fraud
+
         p_fraud = 1.0 / (1.0 + np.exp(-deviation * 10))  # scale=10 for sharper boundary
         p_licit = 1.0 - p_fraud
         return np.stack([p_licit, p_fraud], axis=1).astype(np.float32)
@@ -212,8 +220,9 @@ class AutoencoderModel(FraudModel):
         self._dropout     = ckpt["dropout"]
         self._threshold_k = ckpt["threshold_k"]
         self._threshold   = ckpt["threshold"]
+        self._inverted    = bool(ckpt.get("inverted", False))
         self._build_model()
         self._model.load_state_dict(ckpt["state_dict"])  # type: ignore
         self._model.eval()  # type: ignore
-        logger.info("autoencoder loaded ← %s", path)
+        logger.info("autoencoder loaded ← %s (inverted=%s)", path, self._inverted)
         return self

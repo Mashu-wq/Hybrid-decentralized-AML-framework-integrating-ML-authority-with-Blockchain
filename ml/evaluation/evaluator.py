@@ -206,32 +206,50 @@ def compare_models(
 
 
 # ---------------------------------------------------------------------------
-# Known benchmark (from user's Colab training run — 2026-04-01)
+# Known benchmark (from Colab training run — 2026-06-08)
+# Elliptic Bitcoin Dataset, 80/20 temporal split, SMOTE on training set.
+# GNN: pure-PyTorch GraphSAGE (3-layer, 85→256→128→64→2), 50 epochs.
+# Autoencoder: inverted scoring — fraud has LOWER reconstruction error on
+#   the Elliptic dataset (fraud txs have simpler, more uniform features).
 # ---------------------------------------------------------------------------
 
 COLAB_BENCHMARK = ModelComparisonReport(
     active_model="ensemble",
     models=[
         EvalMetrics(
-            model_name="lightgbm",    model_version="colab-v1",
+            model_name="lightgbm",      model_version="colab-v1",
             precision=0.6461, recall=0.6818, f1_score=0.6635,
-            accuracy=0.0, auc_roc=0.9649, auc_pr=0.0,
+            accuracy=0.0, auc_roc=0.9649, auc_pr=0.697,
             true_positives=345, false_positives=189, true_negatives=0, false_negatives=161,
-            sample_count=9642, period="test",
+            sample_count=9642, threshold=0.5, period="test",
         ),
         EvalMetrics(
             model_name="random_forest", model_version="colab-v1",
             precision=0.8834, recall=0.5692, f1_score=0.6923,
-            accuracy=0.0, auc_roc=0.9638, auc_pr=0.0,
+            accuracy=0.0, auc_roc=0.9638, auc_pr=0.682,
             true_positives=288, false_positives=38, true_negatives=0, false_negatives=218,
-            sample_count=9642, period="test",
+            sample_count=9642, threshold=0.5, period="test",
         ),
         EvalMetrics(
-            model_name="xgboost",     model_version="colab-v1",
+            model_name="xgboost",       model_version="colab-v1",
             precision=0.7064, recall=0.6324, f1_score=0.6674,
-            accuracy=0.0, auc_roc=0.9597, auc_pr=0.0,
+            accuracy=0.0, auc_roc=0.9597, auc_pr=0.691,
             true_positives=320, false_positives=133, true_negatives=0, false_negatives=186,
-            sample_count=9642, period="test",
+            sample_count=9642, threshold=0.5, period="test",
+        ),
+        EvalMetrics(
+            model_name="gnn",           model_version="colab-v1",
+            precision=0.2234, recall=0.6645, f1_score=0.3344,
+            accuracy=0.0, auc_roc=0.8886, auc_pr=0.547,
+            true_positives=313, false_positives=1088, true_negatives=7754, false_negatives=158,
+            sample_count=9313, threshold=0.5, period="test",
+        ),
+        EvalMetrics(
+            model_name="autoencoder",   model_version="colab-v1",
+            precision=0.0661, recall=0.6815, f1_score=0.1205,
+            accuracy=0.0, auc_roc=0.7094, auc_pr=0.389,
+            true_positives=321, false_positives=4534, true_negatives=4308, false_negatives=150,
+            sample_count=9313, threshold=0.5, period="test",
         ),
     ],
 )

@@ -173,13 +173,15 @@ Orderer: &OrdererDefaults
     Admins:
       Type: ImplicitMeta
       Rule: "MAJORITY Admins"
-    # BlockValidation requires MAJORITY of orderer org admins to sign a block.
-    # With Org1+Org2+Org3 all in the orderer organizations, this means
-    # at least 2 of the 3 business orgs must endorse every block — no single
-    # org can unilaterally produce a valid block.
+    # BlockValidation: ANY Writers — correct for Raft ordering.
+    # In Raft, only the elected leader cuts and signs blocks (1 signature).
+    # Multi-org security comes from Raft consensus (majority quorum to elect
+    # a leader and commit log entries), not from block signature policy.
+    # MAJORITY Writers with 4 orderer orgs would require 3 signatures,
+    # which is impossible in single-leader Raft and permanently breaks delivery.
     BlockValidation:
       Type: ImplicitMeta
-      Rule: "MAJORITY Writers"
+      Rule: "ANY Writers"
   Organizations:
   Capabilities:
     <<: *OrdererCapabilities

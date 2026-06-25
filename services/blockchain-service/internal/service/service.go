@@ -43,6 +43,7 @@ func (s *Service) UpdateKYCStatus(ctx context.Context, req domain.UpdateKYCStatu
 	txID, payload, err := s.gateway.Invoke(ctx, s.cfg.KYCChannel, s.cfg.KYCChaincode, "UpdateKYCStatus", [][]byte{
 		[]byte(req.CustomerID),
 		[]byte(req.KYCStatus),
+		[]byte(req.RiskLevel),
 		[]byte(req.Reason),
 	})
 	if err != nil {
@@ -56,7 +57,9 @@ func (s *Service) GetKYCRecord(ctx context.Context, customerID string) (domain.T
 	if err != nil {
 		return domain.TransactionResponse{}, err
 	}
-	return newTransactionResponse("", payload), nil
+	// Fabric queries don't produce a tx ID; surface the record's last-write txId instead.
+	txID := extractPayloadTxID(payload)
+	return newTransactionResponse(txID, payload), nil
 }
 
 func (s *Service) CreateAlert(ctx context.Context, req domain.CreateAlertRequest) (domain.TransactionResponse, error) {
@@ -297,4 +300,17 @@ func newTransactionResponse(txID string, payload []byte) domain.TransactionRespo
 		resp.Payload = append(resp.Payload[:0], payload...)
 	}
 	return resp
+}
+
+// extractPayloadTxID pulls the "txId" field from a JSON payload returned by a
+// chaincode query. Fabric query calls don't produce a Fabric transaction ID, so
+// the chaincode embeds the last-write tx ID in the record itself.
+func extractPayloadTxID(payload []byte) string {
+	var record struct {
+		TxID string `json:"txId"`
+	}
+	if err := json.Unmarshal(payload, &record); err == nil {
+		return record.TxID
+	}
+	return ""
 }

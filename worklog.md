@@ -1794,3 +1794,374 @@ The Elliptic Bitcoin Dataset in Your Project
 
   All 5 "MUST DO" critical fixes are complete. Your project is now ready for the thesis evaluation phase. The next step is to start
   your Fabric network, deploy the chaincodes, run run_benchmark.sh, and paste the numbers into your thesis paper.
+
+
+
+
+
+
+
+
+
+
+ CELL A — Install torch-geometric
+
+  !pip install torch-geometric -q
+  print("torch-geometric installed")
+
+  ---
+  CELL B — Verify variables and prepare full graph data
+
+  import torch
+  import torch.nn as nn
+  import torch.nn.functional as F
+  import numpy as np
+  from torch_geometric.nn import SAGEConv
+
+  DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  print(f"Device: {DEVICE}")
+
+  # Verify your existing variables are ready
+  print(f"X_tr shape : {X_tr.shape}")      # (n_train, 85)
+  print(f"X_te shape : {X_te.shape}")      # (n_test, 85)
+  print(f"y_tr fraud : {y_tr.sum()}")
+  print(f"y_te fraud : {y_te.sum()}")
+  print(f"Features   : {len(PROJECT_FEATURES)}")  # must be 85
+
+  # Full dataset for GNN (needs all nodes for graph message passing)
+  X_all = df_clean[PROJECT_FEATURES].values.astype("float32")
+  y_all = df_clean['is_illicit'].values.astype(int)
+  n_total  = len(df_clean)
+  split_at = int(n_total * 0.8)
+
+  train_mask = np.zeros(n_total, dtype=bool)
+  train_mask[:split_at] = True
+  test_mask  = ~train_mask
+
+  print(f"\nTotal graph nodes : {n_total}")
+  print(f"Train nodes       : {train_mask.sum()}")
+  print(f"Test  nodes       : {test_mask.sum()}")
+  
+  ---
+  CELL C — Load edgelist (already on your Drive)
+
+  # df_edges is already loaded from your earlier cells
+  # Just verify and rename columns if needed
+  print(f"df_edges shape: {df_edges.shape}")
+  print(f"df_edges columns: {df_edges.columns.tolist()}")
+
+  # Handle whichever column name was set
+  if 'txId_source' in df_edges.columns:
+      src_col, dst_col = 'txId_source', 'txId_target'
+  elif 'txId1' in df_edges.columns:
+      src_col, dst_col = 'txId1', 'txId2'
+  else:
+      src_col, dst_col = df_edges.columns[0], df_edges.columns[1]
+  
+  print(f"Using columns: {src_col}, {dst_col}")
+
+  ---
+  CELL D — Build edge index
+
+  # Map txId → row index in df_clean
+  txid_to_idx = {txid: idx for idx, txid in enumerate(df_clean['txId'].values)}
+
+  src_list, dst_list = [], []
+  skipped = 0
+  for row in df_edges.itertuples(index=False):
+      s = txid_to_idx.get(getattr(row, src_col))
+      d = txid_to_idx.get(getattr(row, dst_col))
+      if s is not None and d is not None:
+          src_list.append(s)
+          dst_list.append(d)
+      else:
+          skipped += 1
+
+  edge_index = torch.tensor([src_list, dst_list], dtype=torch.long).to(DEVICE)
+  print(f"Edge index shape : {edge_index.shape}")  # (2, ~230000)
+  print(f"Edges skipped    : {skipped} (nodes not in labeled set)")
+
+  ---
+  CELL E — Define GNN model
+
+  class SAGENet(nn.Module):
+      def __init__(self, in_channels=85, hidden_channels=256, num_layers=3, dropout=0.3):
+          super().__init__()
+          self.convs = nn.ModuleList()
+          self.bns   = nn.ModuleList()
+          prev = in_channels
+          for i in range(num_layers):
+              out = hidden_channels // (2 ** i) if i < num_layers - 1 else 64
+              self.convs.append(SAGEConv(prev, out))
+              self.bns.append(nn.BatchNorm1d(out))
+              prev = out
+          self.dropout    = dropout
+          self.classifier = nn.Linear(64, 2)
+  
+      def forward(self, x, edge_index):
+          for conv, bn in zip(self.convs, self.bns):
+              x = conv(x, edge_index)
+              x = bn(x)
+              x = F.relu(x)
+              x = F.dropout(x, p=self.dropout, training=self.training)
+          return self.classifier(x)
+  
+  print("SAGENet defined")
+
+  ---
+  CELL F — Train GNN
+
+  from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score, confusion_matrix
+
+  # Class weights to handle imbalance (no SMOTE for GNN — uses graph structure instead)
+  n_licit = int((y_all == 0).sum())
+  n_fraud = int((y_all == 1).sum())
+  pos_weight = torch.tensor([1.0, n_licit / max(n_fraud, 1)], device=DEVICE)
+  print(f"Class weight for fraud: {n_licit/n_fraud:.1f}x")
+
+  # Move all data to device
+  X_t = torch.tensor(X_all, dtype=torch.float32).to(DEVICE)
+  y_t = torch.tensor(y_all, dtype=torch.long).to(DEVICE)
+
+  gnn       = SAGENet(85, 256, 3, 0.3).to(DEVICE)
+  optimizer = torch.optim.Adam(gnn.parameters(), lr=1e-3, weight_decay=5e-4)
+
+  print("\nTraining GNN (50 epochs)...")
+  gnn.train()
+  for epoch in range(50):
+      optimizer.zero_grad()
+      out  = gnn(X_t, edge_index)
+      loss = F.cross_entropy(out, y_t, weight=pos_weight)
+      loss.backward()
+      optimizer.step()
+      if (epoch + 1) % 10 == 0:
+          print(f"  Epoch {epoch+1}/50 — loss={loss.item():.4f}")
+
+  print("GNN training complete!")
+
+  ---
+  CELL G — Evaluate GNN
+
+  gnn.eval()
+  with torch.no_grad():
+      logits    = gnn(X_t, edge_index)
+      proba_all = F.softmax(logits, dim=1).cpu().numpy()
+
+  proba_test = proba_all[test_mask][:, 1]
+  y_te_true  = y_all[test_mask]
+  y_pred_gnn = (proba_test >= 0.5).astype(int)
+
+  gnn_auc  = roc_auc_score(y_te_true, proba_test)
+  gnn_prec = precision_score(y_te_true, y_pred_gnn, zero_division=0)
+  gnn_rec  = recall_score(y_te_true, y_pred_gnn, zero_division=0)
+  gnn_f1   = f1_score(y_te_true, y_pred_gnn, zero_division=0)
+  cm       = confusion_matrix(y_te_true, y_pred_gnn)
+  tn, fp, fn, tp = cm.ravel()
+  
+  print("=" * 50)
+  print("  GNN (GraphSAGE) — Test Set Results")
+  print("=" * 50)
+  print(f"  AUC-ROC   : {gnn_auc:.4f}")
+  print(f"  Precision : {gnn_prec:.4f}")
+  print(f"  Recall    : {gnn_rec:.4f}")
+  print(f"  F1        : {gnn_f1:.4f}")
+  print(f"  TP={tp}  FP={fp}  TN={tn}  FN={fn}")
+  print("=" * 50)
+
+  ---
+  CELL H — Save GNN artifact
+
+  torch.save({
+      "state_dict":      gnn.state_dict(),
+      "in_channels":     85,
+      "hidden_channels": 256,
+      "num_layers":      3,
+      "dropout":         0.3,
+  }, "gnn_model.pt")
+  print("Saved: gnn_model.pt")
+
+  ---
+  CELL I — Define and train Autoencoder
+
+  from torch.utils.data import DataLoader, TensorDataset
+
+  class AutoencoderNet(nn.Module):
+      def __init__(self, dims=(85, 64, 32, 16), dropout=0.2):
+          super().__init__()
+          enc = []
+          for i in range(len(dims) - 1):
+              enc += [nn.Linear(dims[i], dims[i+1]), nn.ReLU(), nn.Dropout(dropout)]
+          self.encoder = nn.Sequential(*enc)
+          dec = []
+          rdims = list(reversed(dims))
+          for i in range(len(rdims) - 1):
+              dec.append(nn.Linear(rdims[i], rdims[i+1]))
+              if i < len(rdims) - 2:
+                  dec += [nn.ReLU(), nn.Dropout(dropout)]
+          self.decoder = nn.Sequential(*dec)
+
+      def forward(self, x):
+          return self.decoder(self.encoder(x))
+
+  # Train on licit TRAINING samples only (X_tr from your existing split)
+  X_licit = torch.tensor(X_tr[y_tr == 0], dtype=torch.float32)
+  loader  = DataLoader(TensorDataset(X_licit), batch_size=512, shuffle=True)
+
+  ae           = AutoencoderNet((85, 64, 32, 16), 0.2).to(DEVICE)
+  optimizer_ae = torch.optim.Adam(ae.parameters(), lr=1e-3)
+  criterion_ae = nn.MSELoss()
+  
+  print("Training Autoencoder (30 epochs, licit samples only)...")
+  ae.train()
+  for epoch in range(30):
+      total = 0.0
+      for (batch,) in loader:
+          batch = batch.to(DEVICE) 
+          optimizer_ae.zero_grad()
+          recon = ae(batch)
+          loss  = criterion_ae(recon, batch)
+          loss.backward()
+          optimizer_ae.step()
+          total += loss.item()
+      if (epoch + 1) % 10 == 0:
+          print(f"  Epoch {epoch+1}/30 — loss={total/len(loader):.6f}")
+
+  print("Autoencoder training complete!")
+
+  ---
+  CELL J — Calibrate threshold and evaluate Autoencoder
+
+  # Calibrate on full training set
+  ae.eval()
+  with torch.no_grad():
+      recon_tr = ae(torch.tensor(X_tr, dtype=torch.float32).to(DEVICE)).cpu().numpy()
+  errors_tr    = ((X_tr - recon_tr) ** 2).mean(axis=1)
+  licit_errors = errors_tr[y_tr == 0]
+  ae_threshold = float(licit_errors.mean() + 3.0 * licit_errors.std())
+  print(f"Calibrated threshold: {ae_threshold:.6f}")
+
+  # Evaluate on test set
+  with torch.no_grad():
+      recon_te = ae(torch.tensor(X_te, dtype=torch.float32).to(DEVICE)).cpu().numpy()
+  errors_te    = ((X_te - recon_te) ** 2).mean(axis=1)
+  deviation    = errors_te - ae_threshold
+  p_fraud_ae   = 1.0 / (1.0 + np.exp(-deviation * 10))
+  y_pred_ae    = (p_fraud_ae >= 0.5).astype(int)
+
+  ae_auc  = roc_auc_score(y_te, p_fraud_ae)
+  ae_prec = precision_score(y_te, y_pred_ae, zero_division=0)
+  ae_rec  = recall_score(y_te, y_pred_ae, zero_division=0)
+  ae_f1   = f1_score(y_te, y_pred_ae, zero_division=0)
+  cm2     = confusion_matrix(y_te, y_pred_ae)
+  tn2, fp2, fn2, tp2 = cm2.ravel()
+  
+  print("=" * 50)
+  print("  Autoencoder — Test Set Results")
+  print("=" * 50)
+  print(f"  AUC-ROC   : {ae_auc:.4f}")
+  print(f"  Precision : {ae_prec:.4f}")
+  print(f"  Recall    : {ae_rec:.4f}")
+  print(f"  F1        : {ae_f1:.4f}")
+  print(f"  TP={tp2}  FP={fp2}  TN={tn2}  FN={fn2}")
+  print("=" * 50)
+
+  ---
+  CELL K — Save Autoencoder artifact
+
+  torch.save({
+      "state_dict":  ae.state_dict(),
+      "input_dim":   85,
+      "hidden_dims": (64, 32, 16),
+      "dropout":     0.2,
+      "threshold_k": 3.0,
+      "threshold":   ae_threshold,
+  }, "autoencoder_model.pt")
+  print("Saved: autoencoder_model.pt")
+
+  ---
+  CELL L — Download both files
+
+  from google.colab import files
+  files.download("gnn_model.pt")
+  files.download("autoencoder_model.pt")
+  print("Done! Copy both .pt files to ml/artifacts/")
+  
+  ---
+  Once you have the metric numbers from Cells G and J, share them with me and I will update evaluator.py with the complete 5-model
+  benchmark table.
+
+
+
+  ┌───────────────┬─────────┬───────────┬────────┬────────┐
+  │     Model     │ AUC-ROC │ Precision │ Recall │   F1   │
+  ├───────────────┼─────────┼───────────┼────────┼────────┤
+  │ LightGBM      │ 0.9649  │ 0.6461    │ 0.6818 │ 0.6635 │
+  ├───────────────┼─────────┼───────────┼────────┼────────┤
+  │ Random Forest │ 0.9638  │ 0.8834    │ 0.5692 │ 0.6923 │
+  ├───────────────┼─────────┼───────────┼────────┼────────┤
+  │ XGBoost       │ 0.9597  │ 0.7064    │ 0.6324 │ 0.6674 │
+  ├───────────────┼─────────┼───────────┼────────┼────────┤
+  │ GNN           │ 0.8886  │ 0.2234    │ 0.6645 │ 0.3344 │
+  ├───────────────┼─────────┼───────────┼────────┼────────┤
+  │ Autoencoder   │ 0.7094  │ 0.0661    │ 0.6815 │ 0.1205 │
+  └───────────────┴─────────┴───────────┴────────┴────────┘
+
+
+
+
+
+   The Two Framings — One Gets Published, One Gets Rejected
+  
+  Framing A — WRONG (will be rejected)
+
+  ▎ "We trained our bank fraud detection system on the Elliptic dataset and it achieves 96% AUC on bank transactions."
+
+  This is false and reviewers will reject it.
+  
+  ---
+  Framing B — CORRECT (publishable)
+  
+  ▎ "Due to the unavailability of publicly labeled bank transaction datasets — a well-documented constraint in financial crime 
+  ▎ research — we use the Elliptic Bitcoin Transaction Dataset as a benchmark proxy. The dataset provides the only publicly available 
+  ▎ ground-truth labels for real financial crime at scale. The feature semantics are analogous across financial crime domains 
+  ▎ (transaction velocity, amount anomaly, network topology, temporal patterns). The proposed system architecture is dataset-agnostic:
+  ▎ in institutional deployment, the ML component would be retrained on proprietary bank transaction data while the blockchain audit 
+  ▎ trail architecture remains unchanged."
+
+  This framing:
+  - Is honest about the limitation
+  - Explains WHY this dataset was chosen
+  - Separates the system contribution from the dataset
+  - Positions real bank data as future work
+
+  ---
+  What Your Real Thesis Contribution Is
+  
+  This is critical to understand. Your contribution is NOT a new fraud detection model. Your contribution is:
+
+  ▎ A system architecture that integrates ML-based fraud detection with a blockchain immutable audit trail, demonstrated on a real 
+  ▎ financial crime benchmark dataset.
+
+  The blockchain part (3 channels, 3 orgs, Raft consensus, tamper-proof SAR anchoring) is completely independent of the Elliptic
+  dataset. That is your novel contribution. The ML part validates that the system can score fraud at state-of-the-art accuracy.
+  Reviewers evaluate these separately.
+
+  ---
+  Bottom Line
+
+  ┌───────────────────────────────────────────────┬───────────────────────────────────────────────┐
+  │                   Question                    │                    Answer                     │
+  ├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Is it publishable?                            │ Yes with Framing B                            │
+  ├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Is the feature mapping required?              │ Yes — to justify domain transfer              │
+  ├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Is it academically honest?                    │ Yes if you state the limitation clearly       │
+  ├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Will reviewers accept it?                     │ Yes — this is standard practice in this field │
+  ├───────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Does the blockchain contribution stand alone? │ Yes — independently of the dataset            │
+  └───────────────────────────────────────────────┴───────────────────────────────────────────────┘
+  
+  The feature mapping table (item 6) is what makes Framing B defensible. Without it, you cannot justify the domain transfer. That is
+  why it matters.

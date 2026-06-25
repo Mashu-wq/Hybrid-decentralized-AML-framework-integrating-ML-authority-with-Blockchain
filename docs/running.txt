@@ -1,0 +1,231 @@
+PART 1 — Start Infrastructure
+
+  Step 1: Start all infrastructure containers
+
+  make infra-up
+
+  This starts: PostgreSQL, MongoDB, Redis, Zookeeper, Kafka, Vault, Jaeger, Prometheus, Grafana, MLflow. Wait ~30 seconds for everything to
+  initialize.
+
+  # Verify everything is healthy
+  make health
+
+  All services should show OK. If Kafka/Vault shows DOWN, wait another 20s and recheck.
+
+  ---
+  Step 2 (Optional but useful): Start dev tools
+
+  docker compose --profile dev-tools up -d
+
+  This adds Kafka UI (:8090) and pgAdmin (:5050) for visual inspection.
+
+  ---
+  PART 2 — Start Hyperledger Fabric Network
+
+  Step 3: Start Fabric peers and orderers
+
+  make fabric-up
+
+  This runs blockchain/network/start.sh — starts the 3-org Fabric network (Org1/PrimaryBank, Org2/Regulator, Org3/PartnerBank) with Raft orderers.
+
+  Step 4: Deploy the 3 chaincodes
+
+  make chaincode-deploy
+
+  Deploys:
+  - kyc-contract → kyc-channel
+  - alert-contract → alert-channel
+  - audit-contract → audit-channel
+
+  ---
+  PART 3 — Start Go Microservices + ML Service
+
+  Step 5: Build all Go services (already done — binaries exist in bin/)
+
+  make build
+
+  Step 6: Start all services
+
+  make run
+
+  This runs scripts/run-all.sh which starts services in dependency order with logs going to ./logs/<service>.log:
+
+  1. encryption-service (first — others depend on it)
+  2. iam-service, kyc-service, transaction-service, blockchain-service, alert-service, case-service, analytics-service
+  3. ml-service (Python FastAPI on :8000)
+  4. api-gateway (last — after all backends are ready)
+
+  Or run them in separate terminals for better log visibility:
+
+  # Terminal 1 - encryption
+  cd services/encryption-service && go run ./cmd/server/
+
+  # Terminal 2 - IAM
+  cd services/iam-service && go run ./cmd/server/
+
+  # Terminal 3 - ML service (Python)
+  cd services/ml-service
+  PYTHONPATH=$(pwd)/../.. MODEL_ARTIFACT_PATH=$(pwd)/../../ml/artifacts \
+    poetry run uvicorn main:app --host 0.0.0.0 --port 8000
+
+  # (continue for each service...)
+
+  ---
+  PART 4 — Verify Everything Is Running
+  2. iam-service, kyc-service, transaction-service, blockchain-service, alert-service, case-service, analytics-service
+  2. iam-service, kyc-service, transaction-service, blockchain-service, alert-service, case-service, analytics-service
+  4. api-gateway (last — after all backends are ready)
+
+  Or run them in separate terminals for better log visibility:
+
+  # Terminal 1 - encryption
+  cd services/encryption-service && go run ./cmd/server/
+
+  # Terminal 2 - IAM
+  cd services/iam-service && go run ./cmd/server/
+
+  # Terminal 3 - ML service (Python)
+  cd services/ml-service
+  PYTHONPATH=$(pwd)/../.. MODEL_ARTIFACT_PATH=$(pwd)/../../ml/artifacts \
+    poetry run uvicorn main:app --host 0.0.0.0 --port 8000
+
+  # (continue for each service...)
+
+  ---
+  PART 4 — Verify Everything Is Running
+
+  Step 7: Run health checks
+
+  # API Gateway (checks all downstream services)
+  curl -s http://localhost:8080/health | python3 -m json.tool
+
+  # ML Service
+  curl -s http://localhost:8000/health | python3 -m json.tool
+
+  # Blockchain Service
+  curl -s http://localhost:9005/health | python3 -m json.tool
+
+  Expected: all sub-services show "ok".
+
+  ---
+  PART 5 — End-to-End Testing (follow docs/api_docs.txt)
+
+  The test flows through 8 phases. Here's the condensed critical path:
+
+  Phase 1 — Register KYC customers
+
+  # Register LOW-risk customer
+  curl -s -X POST http://localhost:9001/api/v1/kyc/customers \
+    -H "Content-Type: application/json" \
+    -d '{
+      "full_name": "Alice Johnson",
+      "date_of_birth": "1985-03-15",
+      "email": "alice@example.com",
+      "document_number": "P123456789",
+      "document_type": "PASSPORT",
+      "country_of_issue": "US",
+      "country_code": "US"
+    }' | python3 -m json.tool
+  # Save: CUSTOMER_ID from response
+
+  # Approve as LOW risk (writes to Fabric KYC-channel)
+  curl -s -X PATCH http://localhost:9001/api/v1/kyc/customers/$CUSTOMER_ID/status \
+    -H "Content-Type: application/json" \
+    -d '{"status":"APPROVED","risk_level":"LOW","verifier_id":"analyst-001","reason":"Verified"}' \
+    | python3 -m json.tool
+  # Check: blockchain_tx_id is present → KYC written to Fabric
+
+  Phase 2 — Verify blockchain write
+
+  curl -s http://localhost:9005/internal/v1/kyc/record/$CUSTOMER_ID | python3 -m json.tool
+
+  Phase 3 — Submit transaction via Kafka (triggers ML pipeline)
+
+  docker exec -it fds-kafka kafka-console-producer \
+    --broker-list localhost:9092 \
+    --topic transactions.raw
+
+  Paste this JSON then press Enter:
+  {"tx_hash":"tx-test-001","customer_id":"REPLACE_WITH_CUSTOMER_ID","amount":15000.00,"currency_code":"USD","merchant_id":"merch-crypto-01","merchant
+  _name":"CryptoExchange Pro","merchant_category":"cryptocurrency","country_code":"RU","channel":"WIRE_TRANSFER","counterparty_id":"offshore-001","co
+  unterparty_country":"KY","latitude":55.7558,"longitude":37.6176,"transaction_at":"2026-06-25T02:15:00Z"}
+
+  Press Ctrl+C to exit.
+
+  Phase 4 — Check alerts
+
+  # Wait 2-3s for Kafka→ML→alert pipeline
+  curl -s "http://localhost:9003/alerts?status=OPEN" | python3 -m json.tool
+  # Save: ALERT_ID
+
+  Phase 5 — Case management + SAR
+
+  # Create investigation case
+  curl -s -X POST http://localhost:9004/cases \
+    -H "Content-Type: application/json" \
+    -d '{"alert_id":"ALERT_ID","customer_id":"CUSTOMER_ID","tx_hash":"tx-test-001","title":"Suspicious Wire","description":"Cross-border crypto 
+  transfer","fraud_probability":0.87,"risk_score":87.0,"assignee_id":"investigator-001"}' \
+    | python3 -m json.tool
+  # Save: CASE_ID
+
+  # Generate SAR (anchors hash to blockchain audit-channel)
+  curl -s -X POST http://localhost:9004/cases/$CASE_ID/sar \
+    -H "Content-Type: application/json" \
+    -d '{"generated_by":"investigator-001","notes":"Structuring typology confirmed."}' \
+    | python3 -m json.tool
+
+  Phase 6 — Verify full audit trail on blockchain
+
+  # Full immutable audit trail for this customer
+  curl -s "http://localhost:9005/internal/v1/audit/trail?entity_id=$CUSTOMER_ID&entity_type=CUSTOMER" \
+    | python3 -m json.tool
+  # Should show: TRANSACTION_PROCESSED + SAR_FILED records
+
+  Phase 7 — Compliance report
+
+  curl -s "http://localhost:9005/internal/v1/audit/compliance?start_date=2026-06-25T00:00:00Z&end_date=2026-06-25T23:59:59Z" \
+    | python3 -m json.tool
+
+  ---
+  Monitoring Dashboards
+
+  ┌──────────────────┬────────────────────────┬───────────────────────────────────────────┐
+  │       Tool       │          URL           │                Credentials                │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ Grafana          │ http://localhost:3000  │ admin / see .env → GRAFANA_ADMIN_PASSWORD │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ Jaeger (tracing) │ http://localhost:16686 │ —                                         │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ Prometheus       │ http://localhost:9090  │ —                                         │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ MLflow           │ http://localhost:5000  │ —                                         │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ Kafka UI         │ http://localhost:8090  │ — (needs --profile dev-tools)             │
+  ├──────────────────┼────────────────────────┼───────────────────────────────────────────┤
+  │ pgAdmin          │ http://localhost:5050  │ admin@fraud.local                         │
+  └──────────────────┴────────────────────────┴───────────────────────────────────────────┘
+
+  ---
+  Logs
+
+  tail -f logs/transaction-service.log   # watch ML pipeline processing
+  tail -f logs/ml-service.log            # watch model predictions
+  tail -f logs/blockchain-service.log    # watch Fabric writes
+  make infra-logs                         # all Docker infra logs
+
+  ---
+  Teardown
+
+  # Stop Go services: Ctrl+C in the make run terminal
+  make infra-down      # stop Docker containers (keeps data)
+  make fabric-down     # stop Fabric network
+  make infra-clean     # DESTRUCTIVE: wipe all volumes + data
+
+  ---
+  Key Known Issues to Watch For
+
+  1. ML service takes 60-90s to start — models load into memory. The health check start_period: 90s accounts for this.
+  2. Blockchain latency ~400-900ms — wait 2-3s after a Kafka publish before checking audit trail.
+  3. Python 3.12 vs 3.11 — poetry may warn; should still work. If import errors occur: cd services/ml-service && poetry install.
+  4. SAR generation needs S3 — the PDF upload step will fail without AWS S3 configured; the blockchain hash anchor step still succeeds.
+  5. Transactions ONLY via Kafka — there is no REST endpoint to submit transactions; must use Kafka CLI or producer.

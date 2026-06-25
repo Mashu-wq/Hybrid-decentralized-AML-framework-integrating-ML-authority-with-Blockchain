@@ -45,9 +45,14 @@ type Config struct {
 	IAMServiceAddr string // for JWT validation
 
 	// --- Thresholds ---
-	FraudAlertThreshold  float64 // publish to alerts.created if prob > this (default 0.7)
-	VelocityAlert1HLimit int     // alert if tx count in 1h exceeds this (default 20)
-	VelocityAlert24HLimit int    // alert if tx count in 24h exceeds this (default 100)
+	// Alert thresholds are stratified by customer KYC risk level (FATF risk-based approach).
+	// Higher-risk customers are monitored with a lower threshold (higher recall).
+	AlertThresholdLow      float64 // LOW-risk customers    (default 0.70)
+	AlertThresholdMedium   float64 // MEDIUM-risk customers (default 0.55)
+	AlertThresholdHigh     float64 // HIGH-risk customers   (default 0.40)
+	AlertThresholdCritical float64 // CRITICAL-risk customers (default 0.25)
+	VelocityAlert1HLimit   int     // alert if tx count in 1h exceeds this (default 20)
+	VelocityAlert24HLimit  int     // alert if tx count in 24h exceeds this (default 100)
 
 	// --- HTTP health server ---
 	HTTPPort int
@@ -92,9 +97,12 @@ func Load() (*Config, error) {
 
 		IAMServiceAddr: env("IAM_SERVICE_ADDR", "localhost:50060"),
 
-		FraudAlertThreshold:   envFloat("FRAUD_ALERT_THRESHOLD", 0.7),
-		VelocityAlert1HLimit:  envInt("VELOCITY_ALERT_1H_LIMIT", 20),
-		VelocityAlert24HLimit: envInt("VELOCITY_ALERT_24H_LIMIT", 100),
+		AlertThresholdLow:      envFloat("FRAUD_ALERT_THRESHOLD_LOW",      0.70),
+		AlertThresholdMedium:   envFloat("FRAUD_ALERT_THRESHOLD_MEDIUM",   0.55),
+		AlertThresholdHigh:     envFloat("FRAUD_ALERT_THRESHOLD_HIGH",     0.40),
+		AlertThresholdCritical: envFloat("FRAUD_ALERT_THRESHOLD_CRITICAL", 0.25),
+		VelocityAlert1HLimit:   envInt("VELOCITY_ALERT_1H_LIMIT", 20),
+		VelocityAlert24HLimit:  envInt("VELOCITY_ALERT_24H_LIMIT", 100),
 
 		HTTPPort:        envInt("TX_SERVICE_PORT", 9002),
 		JaegerEndpoint:  env("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"),
@@ -107,8 +115,16 @@ func Load() (*Config, error) {
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("INTERNAL_JWT_SECRET is required")
 	}
-	if cfg.FraudAlertThreshold <= 0 || cfg.FraudAlertThreshold >= 1 {
-		return nil, fmt.Errorf("FRAUD_ALERT_THRESHOLD must be between 0 and 1, got %.2f", cfg.FraudAlertThreshold)
+	thresholds := map[string]float64{
+		"FRAUD_ALERT_THRESHOLD_LOW":      cfg.AlertThresholdLow,
+		"FRAUD_ALERT_THRESHOLD_MEDIUM":   cfg.AlertThresholdMedium,
+		"FRAUD_ALERT_THRESHOLD_HIGH":     cfg.AlertThresholdHigh,
+		"FRAUD_ALERT_THRESHOLD_CRITICAL": cfg.AlertThresholdCritical,
+	}
+	for name, v := range thresholds {
+		if v <= 0 || v >= 1 {
+			return nil, fmt.Errorf("%s must be between 0 and 1, got %.2f", name, v)
+		}
 	}
 
 	log.Info().
@@ -118,7 +134,10 @@ func Load() (*Config, error) {
 		Str("consumer_group", cfg.ConsumerGroupID).
 		Str("raw_topic", cfg.TransactionsRawTopic).
 		Str("alert_topic", cfg.AlertsCreatedTopic).
-		Float64("alert_threshold", cfg.FraudAlertThreshold).
+		Float64("threshold_low",      cfg.AlertThresholdLow).
+		Float64("threshold_medium",   cfg.AlertThresholdMedium).
+		Float64("threshold_high",     cfg.AlertThresholdHigh).
+		Float64("threshold_critical", cfg.AlertThresholdCritical).
 		Int("kafka_workers", cfg.KafkaWorkers).
 		Msg("configuration loaded")
 

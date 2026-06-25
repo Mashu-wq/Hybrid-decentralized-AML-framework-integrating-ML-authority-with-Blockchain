@@ -35,6 +35,7 @@ type BlockchainClient interface {
 		ctx context.Context,
 		customerID string,
 		status domain.KYCStatus,
+		riskLevel domain.RiskLevel,
 		reason, verifierID string,
 	) (txID string, err error)
 }
@@ -103,6 +104,7 @@ func (s *stubBlockchainClient) UpdateKYCOnChain(
 	ctx context.Context,
 	customerID string,
 	status domain.KYCStatus,
+	riskLevel domain.RiskLevel,
 	reason, verifierID string,
 ) (string, error) {
 	txID := fmt.Sprintf("stub-tx-%s", uuid.New().String())
@@ -110,6 +112,7 @@ func (s *stubBlockchainClient) UpdateKYCOnChain(
 	s.log.Info().
 		Str("customer_id", customerID).
 		Str("kyc_status", string(status)).
+		Str("risk_level", string(riskLevel)).
 		Str("verifier_id", verifierID).
 		Str("stub_tx_id", txID).
 		Msg("[STUB] would anchor KYC status update on blockchain — Phase 6 pending")
@@ -128,6 +131,7 @@ type registerKYCRequest struct {
 type updateKYCRequest struct {
 	CustomerID string `json:"customer_id"`
 	KYCStatus  string `json:"kyc_status"`
+	RiskLevel  string `json:"risk_level,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	VerifierID string `json:"verifier_id,omitempty"`
 }
@@ -164,11 +168,13 @@ func (c *remoteBlockchainClient) UpdateKYCOnChain(
 	ctx context.Context,
 	customerID string,
 	status domain.KYCStatus,
+	riskLevel domain.RiskLevel,
 	reason, verifierID string,
 ) (string, error) {
 	payload := updateKYCRequest{
 		CustomerID: customerID,
 		KYCStatus:  string(status),
+		RiskLevel:  string(riskLevel),
 		Reason:     reason,
 		VerifierID: verifierID,
 	}

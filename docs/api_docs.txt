@@ -329,6 +329,156 @@ Then publish a moderate-value transaction:
           Country code "IR" (Iran) has geo_risk_score=95 in the system.
           merchant_category "money transfer" has merchant_risk_score=68.
 
+
+
+
+ # 1. Verify Kafka is up
+  docker ps | grep fds-kafka
+  # Should show: fds-kafka   Up X hours (healthy)
+
+  # 2. Verify all services are healthy
+  curl -s http://localhost:9001/health   # KYC service
+  curl -s http://localhost:9002/health   # Transaction service (Kafka consumer)
+  curl -s http://localhost:9003/health   # Alert service
+  curl -s http://localhost:8000/health   # ML service
+
+  # 3. Check your customer ID
+  CUSTOMER_ID="1f609319-34c5-4e17-8ac7-6f3e0c831f2a"
+  curl -s http://localhost:9001/api/v1/kyc/customers/$CUSTOMER_ID | python3 -m json.tool
+
+  ---
+  Why fraud scores are low on first transaction
+
+  The transaction-service enriches raw Kafka messages with Redis data (velocity, prior transaction count, KYC risk score). For a new
+  customer with no transaction history, those Redis fields are zero. The model then sees sparse features and outputs a low score
+  (real LightGBM output: 0.006). This is correct behavior.
+
+  To trigger alerts, you have two options:
+  - Option A: Build up transaction history first (send 3–5 normal transactions), then send suspicious ones
+  - Option B: Update the customer to CRITICAL risk (threshold 0.25) — even a moderate score can trigger an alert
+
+  ---
+  Test 3.1 — Normal transaction (LOW-risk customer, no alert expected)
+
+  CUSTOMER_ID="1f609319-34c5-4e17-8ac7-6f3e0c831f2a"
+
+  echo '{"tx_hash":"tx-normal-001","customer_id":"'"$CUSTOMER_ID"'","amount":250.00,"currency_code":"USD","merchant_id":"merch-amazo
+  n-01","merchant_name":"Amazon","merchant_category":"e-commerce","country_code":"US","channel":"CARD_NOT_PRESENT","counterparty_id"
+  :"amzn-bank-001","counterparty_country":"US","latitude":40.7128,"longitude":-74.0060,"transaction_at":"2026-06-26T10:30:00Z"}' | \
+  docker exec -i fds-kafka kafka-console-producer \
+    --broker-list localhost:9092 --topic transactions.raw
+
+  # Wait 10 seconds, then check:
+  sleep 10
+  tail -5 logs/transaction-service.log
+
+  Expected: alert_created=false, fraud_prob very low (near 0).
+
+  ---
+  Test 3.2 — Suspicious transaction with HIGH-risk customer
+
+  First, create or update a customer to HIGH risk:
+
+  # Update existing customer to HIGH risk
+  curl -s -X PATCH \
+    http://localhost:9001/api/v1/kyc/customers/$CUSTOMER_ID/status \
+    -H "Content-Type: application/json" \
+    -d '{
+      "status":      "APPROVED",
+      "risk_level":  "HIGH",
+      "verifier_id": "analyst-001",
+      "reason":      "Customer flagged for unusual wire transfer patterns."
+    }' | python3 -m json.tool
+
+  Then send a suspicious transaction AND a few preceding ones to build velocity:
+
+  # Send 3 transactions quickly to build Redis velocity
+  for i in 1 2 3; do
+    echo '{"tx_hash":"tx-velocity-'"$i"'","customer_id":"'"$CUSTOMER_ID"'","amount":5000.00,"currency_code":"USD","merchant_id":"mer
+  ch-crypto-'"$i"'","merchant_name":"Binance","merchant_category":"cryptocurrency","country_code":"RU","channel":"WIRE_TRANSFER","co
+  unterparty_id":"crypto-bank-'"$i"'","counterparty_country":"KY","latitude":55.7558,"longitude":37.6176,"transaction_at":"2026-06-2
+  6T03:'"$i"'0:00Z"}' | \
+    docker exec -i fds-kafka kafka-console-producer \
+      --broker-list localhost:9092 --topic transactions.raw
+    sleep 2
+  done
+
+  # Now the suspicious one (HIGH risk threshold is 0.40)
+  echo '{"tx_hash":"tx-suspicious-001","customer_id":"'"$CUSTOMER_ID"'","amount":15000.00,"currency_code":"USD","merchant_id":"merch
+  -crypto-01","merchant_name":"CryptoExchange 
+  Pro","merchant_category":"cryptocurrency","country_code":"RU","channel":"WIRE_TRANSFER","counterparty_id":"offshore-bank-001","cou
+  nterparty_country":"KY","latitude":55.7558,"longitude":37.6176,"transaction_at":"2026-06-26T02:15:00Z"}' | \
+  docker exec -i fds-kafka kafka-console-producer \
+    --broker-list localhost:9092 --topic transactions.raw
+
+  Wait 10 seconds, then check results:
+
+  sleep 10
+
+  # Check if alert was created
+  tail -10 logs/transaction-service.log | grep "fraud_prob\|alert_created"
+
+  # Check the alert service
+  curl -s "http://localhost:9003/alerts?limit=5" | python3 -m json.tool
+
+  ---
+  Test 3.3 — CRITICAL risk threshold (0.25)
+
+  HIGH_RISK_CUSTOMER_ID=$CUSTOMER_ID
+
+  # Update to CRITICAL risk
+  curl -s -X PATCH \
+    http://localhost:9001/api/v1/kyc/customers/$HIGH_RISK_CUSTOMER_ID/status \
+    -H "Content-Type: application/json" \
+    -d '{
+      "status":      "APPROVED",
+      "risk_level":  "CRITICAL",
+      "verifier_id": "analyst-002",
+      "reason":      "SAR filed previously. Elevated to CRITICAL monitoring."
+    }' | python3 -m json.tool
+
+  # Now even a moderate fraud_prob > 0.25 triggers an alert
+  echo '{"tx_hash":"tx-critical-001","customer_id":"'"$HIGH_RISK_CUSTOMER_ID"'","amount":3000.00,"currency_code":"USD","merchant_id"
+  :"merch-moneytransfer-01","merchant_name":"Western Union","merchant_category":"money 
+  transfer","country_code":"IR","channel":"WIRE_TRANSFER","counterparty_id":"tehran-bank-001","counterparty_country":"IR","latitude"
+  :35.6892,"longitude":51.3890,"transaction_at":"2026-06-26T03:45:00Z"}' | \
+  docker exec -i fds-kafka kafka-console-producer \
+    --broker-list localhost:9092 --topic transactions.raw
+
+  sleep 10
+  curl -s "http://localhost:9003/alerts?limit=5" | python3 -m json.tool
+
+  ---
+  Monitor the pipeline live (optional)
+
+  Open two extra terminals:
+
+  Terminal A — Watch transaction-service (ML scores):
+  tail -f logs/transaction-service.log | grep --line-buffered "fraud_prob\|alert_created\|ERROR"
+
+  Terminal B — Watch alert-service:
+  tail -f logs/alert-service.log | grep --line-buffered "alert\|ERROR"
+
+  ---
+  What was just fixed (before running these tests)
+
+  Three bugs were found and fixed in the ML gRPC pipeline:
+
+  ┌──────────────────────────────────┬─────────────────────────────────────────────────────────┬───────────────────────────────┐
+  │               Bug                │                       Root cause                        │              Fix              │
+  ├──────────────────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ 'PrintLogger' has no attribute   │ structlog.stdlib.add_logger_name incompatible with      │ Removed from processor chain  │
+  │ 'name'                           │ PrintLoggerFactory                                      │                               │
+  ├──────────────────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ 'bytes' object has no attribute  │ Hand-written gRPC stub missing                          │ Generated real protobuf stubs │
+  │ 'features'                       │ request_deserializer/response_serializer                │  with grpcio-tools            │
+  ├──────────────────────────────────┼─────────────────────────────────────────────────────────┼───────────────────────────────┤
+  │ cannot import 'SHAPContribution' │ SHAPContribution is in common.proto, not fraud.proto    │ Fixed import in servicer to   │
+  │  from fraud_pb2                  │                                                         │ use common_pb2                │
+  └──────────────────────────────────┴─────────────────────────────────────────────────────────┴───────────────────────────────┘
+
+  The ML service now runs real LightGBM/ensemble scoring (confirmed fraud_prob=0.006 — real model output vs the old heuristic 0.5
+  fallback).
 ================================================================================
 PHASE 4 — ALERT REVIEW
   Goal: View alerts generated by the ML pipeline.

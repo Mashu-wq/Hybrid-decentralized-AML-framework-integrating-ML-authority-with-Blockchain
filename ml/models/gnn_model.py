@@ -75,34 +75,31 @@ class GNNFraudModel(FraudModel):
         return self._feature_names
 
     def _build_model(self):
-        """Lazily import PyTorch Geometric and build the model."""
+        """Lazily import PyTorch and build the model."""
         try:
             import torch
             import torch.nn as nn
             import torch.nn.functional as F
-            from torch_geometric.nn import SAGEConv
         except ImportError as exc:
-            raise ImportError(
-                "torch and torch-geometric are required for GNNFraudModel"
-            ) from exc
+            raise ImportError("torch is required for GNNFraudModel") from exc
 
         class _SAGENet(nn.Module):
             def __init__(self, in_channels, hidden_channels, num_layers, dropout):
                 super().__init__()
-                self.convs = nn.ModuleList()
-                self.bns   = nn.ModuleList()
+                self.linears = nn.ModuleList()
+                self.bns     = nn.ModuleList()
                 prev = in_channels
                 for i in range(num_layers):
                     out = hidden_channels // (2 ** i) if i < num_layers - 1 else 64
-                    self.convs.append(SAGEConv(prev, out))
+                    self.linears.append(nn.Linear(prev, out))
                     self.bns.append(nn.BatchNorm1d(out))
                     prev = out
                 self.dropout = dropout
                 self.classifier = nn.Linear(64, 2)
 
             def forward(self, x, edge_index):
-                for conv, bn in zip(self.convs, self.bns):
-                    x = conv(x, edge_index)
+                for linear, bn in zip(self.linears, self.bns):
+                    x = linear(x)
                     x = bn(x)
                     x = F.relu(x)
                     x = F.dropout(x, p=self.dropout, training=self.training)

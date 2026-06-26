@@ -57,6 +57,14 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api/v1")
 
+@app.get("/health")
+def health_root():
+    """Root health alias — probed by dashboard and load balancers."""
+    from app.models.registry import ModelRegistry
+    reg = getattr(app.state, "registry", None)
+    loaded = reg.available_models() if reg else []
+    return {"status": "serving" if loaded else "starting", "loaded_models": loaded}
+
 
 @app.on_event("startup")
 def startup_event() -> None:

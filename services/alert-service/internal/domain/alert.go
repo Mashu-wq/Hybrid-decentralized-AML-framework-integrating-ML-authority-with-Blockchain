@@ -132,25 +132,25 @@ func (e *AlertIngestEvent) Validate() error {
 
 // Alert is the full alert record stored in PostgreSQL.
 type Alert struct {
-	AlertID              string        `db:"alert_id"`
-	CustomerID           string        `db:"customer_id"`
-	TxHash               string        `db:"tx_hash"`
-	FraudProbability     float64       `db:"fraud_probability"`
-	RiskScore            float64       `db:"risk_score"`
-	Priority             AlertPriority `db:"priority"`
-	Status               AlertStatus   `db:"status"`
-	ModelVersion         string        `db:"model_version"`
-	SHAPExplanationJSON  string        `db:"shap_explanation_json"`
-	FeaturesSnapshotJSON string        `db:"features_snapshot_json"`
-	AssigneeID           string        `db:"assignee_id"`
-	AssignedAt           *time.Time    `db:"assigned_at"`
-	EscalatedAt          *time.Time    `db:"escalated_at"`
-	ResolvedAt           *time.Time    `db:"resolved_at"`
-	ResolutionNotes      string        `db:"resolution_notes"`
-	BlockchainTxID       string        `db:"blockchain_tx_id"`
-	DedupHash            string        `db:"dedup_hash"`
-	CreatedAt            time.Time     `db:"created_at"`
-	UpdatedAt            time.Time     `db:"updated_at"`
+	AlertID              string        `db:"alert_id"               json:"alert_id"`
+	CustomerID           string        `db:"customer_id"            json:"customer_id"`
+	TxHash               string        `db:"tx_hash"                json:"tx_hash"`
+	FraudProbability     float64       `db:"fraud_probability"      json:"fraud_probability"`
+	RiskScore            float64       `db:"risk_score"             json:"risk_score"`
+	Priority             AlertPriority `db:"priority"               json:"priority"`
+	Status               AlertStatus   `db:"status"                 json:"status"`
+	ModelVersion         string        `db:"model_version"          json:"model_version"`
+	SHAPExplanationJSON  string        `db:"shap_explanation_json"  json:"shap_explanation_json"`
+	FeaturesSnapshotJSON string        `db:"features_snapshot_json" json:"features_snapshot_json"`
+	AssigneeID           string        `db:"assignee_id"            json:"assignee_id"`
+	AssignedAt           *time.Time    `db:"assigned_at"            json:"assigned_at"`
+	EscalatedAt          *time.Time    `db:"escalated_at"           json:"escalated_at"`
+	ResolvedAt           *time.Time    `db:"resolved_at"            json:"resolved_at"`
+	ResolutionNotes      string        `db:"resolution_notes"       json:"resolution_notes"`
+	BlockchainTxID       string        `db:"blockchain_tx_id"       json:"blockchain_tx_id"`
+	DedupHash            string        `db:"dedup_hash"             json:"dedup_hash"`
+	CreatedAt            time.Time     `db:"created_at"             json:"created_at"`
+	UpdatedAt            time.Time     `db:"updated_at"             json:"updated_at"`
 }
 
 // ---------------------------------------------------------------------------

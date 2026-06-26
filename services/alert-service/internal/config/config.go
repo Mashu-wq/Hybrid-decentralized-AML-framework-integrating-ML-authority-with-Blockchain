@@ -102,7 +102,7 @@ func Load() (*Config, error) {
 
 		KafkaBrokers:       envStringSlice("KAFKA_BROKERS", []string{"localhost:9092"}),
 		AlertsCreatedTopic: env("ALERTS_CREATED_TOPIC", "alerts.created"),
-		ConsumerGroupID:    env("KAFKA_CONSUMER_GROUP", "alert-service-cg"),
+		ConsumerGroupID:    env("ALERT_CONSUMER_GROUP", env("KAFKA_CONSUMER_GROUP", "alert-service-cg")),
 		KafkaDialTimeout:   envInt("KAFKA_DIAL_TIMEOUT_SEC", 30),
 		KafkaWorkers:       envInt("KAFKA_WORKERS", 4),
 

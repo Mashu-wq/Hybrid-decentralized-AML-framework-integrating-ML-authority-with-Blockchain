@@ -116,7 +116,7 @@ func run() error {
 	// 7. gRPC server + HTTP health server
 	// -------------------------------------------------------------------------
 	grpcSrv := grpcserver.New(svc, log, cfg.JWTSecret)
-	httpSrv := analyticshttp.New(log, cfg.HTTPPort)
+	httpSrv := analyticshttp.New(svc, log, cfg.HTTPPort)
 
 	// -------------------------------------------------------------------------
 	// 8. Graceful shutdown orchestration

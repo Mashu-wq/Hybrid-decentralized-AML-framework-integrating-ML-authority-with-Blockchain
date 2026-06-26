@@ -78,12 +78,11 @@ class FraudMLServicer:
 
     def PredictFraud(self, request, context):
         try:
-            from proto.gen.python.fraud.v1.fraud_pb2 import (
-                PredictFraudResponse,
-                SHAPContribution,
-            )
+            from proto.gen.python.fraud.v1.fraud_pb2 import PredictFraudResponse
+            from proto.gen.python.common.v1.common_pb2 import SHAPContribution
         except ImportError:
-            from fraud_pb2 import PredictFraudResponse, SHAPContribution  # type: ignore
+            from fraud_pb2 import PredictFraudResponse  # type: ignore
+            from common_pb2 import SHAPContribution  # type: ignore
 
         if request.features is None:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)

@@ -1,4 +1,5 @@
 import requests
+from datetime import datetime, timedelta
 
 KYC_URL        = "http://localhost:9001"
 ALERT_URL      = "http://localhost:9003"
@@ -6,6 +7,38 @@ CASE_URL       = "http://localhost:9004"
 BLOCKCHAIN_URL = "http://localhost:9005"
 ML_URL         = "http://localhost:8000"
 TX_URL         = "http://localhost:9002"
+ANALYTICS_URL  = "http://localhost:9006"
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+def get_fraud_trends(period="7d", granularity="day"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/trends",
+                {"period": period, "granularity": granularity})
+
+def get_risk_distribution(period="7d"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/risk-distribution", {"period": period})
+
+def get_top_customers(period="7d", limit=10):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/top-customers",
+                {"period": period, "limit": limit})
+
+def get_alert_metrics(period="24h"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/alert-metrics", {"period": period})
+
+def get_transaction_volume(period="7d", granularity="day"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/transaction-volume",
+                {"period": period, "granularity": granularity})
+
+def get_geo_distribution(period="7d"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/geo-distribution", {"period": period})
+
+def get_model_performance_live(period="7d", model_version=""):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/model-performance",
+                {"period": period, "model_version": model_version})
+
+def get_analytics_report(report_type="SUMMARY", period="7d"):
+    return _get(f"{ANALYTICS_URL}/api/v1/analytics/report",
+                {"type": report_type, "period": period})
 
 TIMEOUT = 5
 
@@ -21,13 +54,24 @@ def _get(url, params=None):
     except Exception as e:
         return None, str(e)
 
+def _extract_error(e):
+    """Return the most informative error string from an exception."""
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        try:
+            body = resp.json()
+            return body.get("message") or body.get("error") or str(e)
+        except Exception:
+            pass
+    return str(e)
+
 def _post(url, body):
     try:
         r = requests.post(url, json=body, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json(), None
     except Exception as e:
-        return None, str(e)
+        return None, _extract_error(e)
 
 def _patch(url, body):
     try:
@@ -35,7 +79,7 @@ def _patch(url, body):
         r.raise_for_status()
         return r.json(), None
     except Exception as e:
-        return None, str(e)
+        return None, _extract_error(e)
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
@@ -54,6 +98,20 @@ def health_all():
         results[name] = "🟢 Online" if data else "🔴 Offline"
     return results
 
+def health_detail(service_name):
+    url_map = {
+        "kyc":         f"{KYC_URL}/health",
+        "alert":       f"{ALERT_URL}/health",
+        "case":        f"{CASE_URL}/health",
+        "blockchain":  f"{BLOCKCHAIN_URL}/health",
+        "ml":          f"{ML_URL}/health",
+        "transaction": f"{TX_URL}/health",
+    }
+    url = url_map.get(service_name.lower())
+    if not url:
+        return None, "Unknown service"
+    return _get(url)
+
 # ── KYC ─────────────────────────────────────────────────────────────────────
 
 def get_customers(status=None, limit=50):
@@ -65,6 +123,9 @@ def get_customers(status=None, limit=50):
 def get_customer(customer_id):
     return _get(f"{KYC_URL}/api/v1/kyc/customers/{customer_id}")
 
+def register_customer(body):
+    return _post(f"{KYC_URL}/api/v1/kyc/customers", body)
+
 def update_kyc_status(customer_id, status, risk_level, verifier_id, reason):
     return _patch(
         f"{KYC_URL}/api/v1/kyc/customers/{customer_id}/status",
@@ -72,10 +133,23 @@ def update_kyc_status(customer_id, status, risk_level, verifier_id, reason):
          "verifier_id": verifier_id, "reason": reason}
     )
 
+def get_customer_pii(customer_id, reason="dashboard-review"):
+    return _get(
+        f"{KYC_URL}/api/v1/kyc/customers/{customer_id}/pii",
+        {"reason": reason},
+    )
+
+def submit_document(customer_id, doc_type, s3_key, content_type="application/pdf", is_front=True):
+    return _post(
+        f"{KYC_URL}/api/v1/kyc/customers/{customer_id}/documents",
+        {"document_type": doc_type, "s3_key": s3_key,
+         "content_type": content_type, "is_front": is_front}
+    )
+
 # ── Alerts ───────────────────────────────────────────────────────────────────
 
-def get_alerts(status=None, min_fraud_prob=None, limit=50):
-    params = {"limit": limit}
+def get_alerts(status=None, min_fraud_prob=None, limit=50, offset=0):
+    params = {"limit": limit, "offset": offset}
     if status:
         params["status"] = status
     if min_fraud_prob is not None:
@@ -88,8 +162,8 @@ def get_alert(alert_id):
 def get_alerts_for_customer(customer_id, limit=20):
     return _get(f"{ALERT_URL}/alerts/customer/{customer_id}", {"limit": limit})
 
-def get_alert_stats():
-    return _get(f"{ALERT_URL}/alerts/stats")
+def get_alert_stats(period="24h"):
+    return _get(f"{ALERT_URL}/alerts/stats", {"period": period})
 
 def assign_alert(alert_id, assignee_id):
     return _post(f"{ALERT_URL}/alerts/{alert_id}/assign", {"assignee_id": assignee_id})
@@ -97,6 +171,10 @@ def assign_alert(alert_id, assignee_id):
 def escalate_alert(alert_id, analyst_id, reason):
     return _post(f"{ALERT_URL}/alerts/{alert_id}/escalate",
                  {"analyst_id": analyst_id, "reason": reason})
+
+def update_alert_status(alert_id, status, changed_by="dashboard", notes=""):
+    return _patch(f"{ALERT_URL}/alerts/{alert_id}/status",
+                  {"status": status, "changed_by": changed_by, "notes": notes})
 
 # ── Cases ────────────────────────────────────────────────────────────────────
 
@@ -122,6 +200,23 @@ def generate_sar(case_id, generated_by, notes):
     return _post(f"{CASE_URL}/cases/{case_id}/sar",
                  {"generated_by": generated_by, "notes": notes})
 
+def get_case_stats(period="7d"):
+    return _get(f"{CASE_URL}/cases/stats", {"period": period})
+
+# ── Transactions ─────────────────────────────────────────────────────────────
+
+def get_transaction(tx_hash):
+    return _get(f"{TX_URL}/transactions/{tx_hash}")
+
+def get_customer_transactions(customer_id, limit=50):
+    return _get(f"{TX_URL}/transactions/customer/{customer_id}", {"limit": limit})
+
+def get_risk_score(customer_id):
+    return _get(f"{TX_URL}/risk-score/{customer_id}")
+
+def get_velocity_stats(customer_id):
+    return _get(f"{TX_URL}/velocity/{customer_id}")
+
 # ── Blockchain ───────────────────────────────────────────────────────────────
 
 def get_kyc_on_chain(customer_id):
@@ -144,7 +239,33 @@ def get_compliance_report(start_date, end_date):
 def get_alert_stats_on_chain():
     return _get(f"{BLOCKCHAIN_URL}/internal/v1/alerts/stats")
 
+def get_blockchain_health():
+    return _get(f"{BLOCKCHAIN_URL}/health")
+
 # ── ML ───────────────────────────────────────────────────────────────────────
 
 def get_ml_health():
     return _get(f"{ML_URL}/health")
+
+def predict_fraud(features: dict, model: str = ""):
+    return _post(f"{ML_URL}/api/v1/predict", {"features": features, "model": model})
+
+def predict_fraud_batch(features_list: list, model: str = ""):
+    return _post(f"{ML_URL}/api/v1/predict/batch", {"features_list": features_list, "model": model})
+
+def get_model_metrics(model_name: str = ""):
+    params = {}
+    if model_name:
+        params["model_name"] = model_name
+    return _get(f"{ML_URL}/api/v1/model/metrics", params)
+
+def get_model_comparison():
+    return _get(f"{ML_URL}/api/v1/model/comparison")
+
+def explain_lime(prediction_id: str, num_features: int = 10):
+    return _post(f"{ML_URL}/api/v1/explain/lime",
+                 {"prediction_id": prediction_id, "num_features": num_features})
+
+def explain_counterfactual(prediction_id: str, target_prob: float = 0.3):
+    return _post(f"{ML_URL}/api/v1/explain/counterfactual",
+                 {"prediction_id": prediction_id, "target_prob": target_prob})

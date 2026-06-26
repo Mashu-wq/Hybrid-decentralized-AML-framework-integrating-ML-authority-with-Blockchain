@@ -358,6 +358,7 @@ func (s *KYCService) UpdateKYCStatus(ctx context.Context, in *UpdateKYCStatusInp
 	customer.RiskLevel = in.RiskLevel
 	customer.VerifierID = in.VerifierID
 	customer.RejectionReason = in.Reason
+	customer.UpdatedAt = time.Now().UTC()
 
 	s.logAudit(ctx, &domain.AuditEvent{
 		CustomerID: in.CustomerID,
@@ -457,15 +458,15 @@ func (s *KYCService) ListByStatus(
 // GetDecryptedPIIResult carries the decrypted PII values.
 // DO NOT LOG any fields in this struct.
 type GetDecryptedPIIResult struct {
-	CustomerID     string
-	FullName       string // DO NOT LOG
-	DateOfBirth    string // DO NOT LOG
-	AddressLine1   string // DO NOT LOG
-	AddressLine2   string // DO NOT LOG
-	Email          string // DO NOT LOG
-	PhoneNumber    string // DO NOT LOG
-	DocumentNumber string // DO NOT LOG
-	ExpiryDate     string // DO NOT LOG
+	CustomerID     string `json:"customer_id"`
+	FullName       string `json:"full_name"`        // DO NOT LOG
+	DateOfBirth    string `json:"date_of_birth"`    // DO NOT LOG
+	AddressLine1   string `json:"address_line1"`    // DO NOT LOG
+	AddressLine2   string `json:"address_line2"`    // DO NOT LOG
+	Email          string `json:"email"`            // DO NOT LOG
+	PhoneNumber    string `json:"phone_number"`     // DO NOT LOG
+	DocumentNumber string `json:"document_number"`  // DO NOT LOG
+	ExpiryDate     string `json:"expiry_date"`      // DO NOT LOG
 }
 
 // GetDecryptedPII decrypts and returns all PII fields for a customer.

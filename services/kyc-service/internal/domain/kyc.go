@@ -45,41 +45,41 @@ const (
 // Customer represents the non-PII KYC profile of an onboarded customer.
 // PII fields (name, DOB, address, etc.) are stored encrypted in EncryptedPII.
 type Customer struct {
-	ID           string
-	IdentityHash string // stable, one-way hash — safe to store/log
+	ID           string    `json:"id"`
+	IdentityHash string    `json:"identity_hash"` // stable, one-way hash — safe to store/log
 
-	KYCStatus KYCStatus
-	RiskLevel RiskLevel
+	KYCStatus KYCStatus `json:"kyc_status"`
+	RiskLevel RiskLevel `json:"risk_level"`
 
 	// Document metadata (non-PII)
-	DocumentType   string
-	CountryOfIssue string
-	Nationality    string
+	DocumentType   string `json:"document_type"`
+	CountryOfIssue string `json:"country_of_issue"`
+	Nationality    string `json:"nationality"`
 
 	// Address components (non-PII classification data only)
-	City        string
-	CountryCode string
-	PostalCode  string
+	City        string `json:"city"`
+	CountryCode string `json:"country_code"`
+	PostalCode  string `json:"postal_code"`
 
 	// Financial profile
-	Occupation            string
-	Employer              string
-	SourceOfFunds         string
-	ExpectedMonthlyVolume float64
+	Occupation            string  `json:"occupation"`
+	Employer              string  `json:"employer"`
+	SourceOfFunds         string  `json:"source_of_funds"`
+	ExpectedMonthlyVolume float64 `json:"expected_monthly_volume"`
 
 	// Biometric and OCR scores
-	LivenessPassed bool
-	FaceMatchScore float64
-	OCRConfidence  float64
+	LivenessPassed bool    `json:"liveness_passed"`
+	FaceMatchScore float64 `json:"face_match_score"`
+	OCRConfidence  float64 `json:"ocr_confidence"`
 
 	// Review metadata
-	VerifierID      string
-	RejectionReason string
-	BlockchainTxID  string
-	ReviewedAt      *time.Time
+	VerifierID      string     `json:"verifier_id,omitempty"`
+	RejectionReason string     `json:"rejection_reason,omitempty"`
+	BlockchainTxID  string     `json:"blockchain_tx_id,omitempty"`
+	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
 
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // EncryptedPII holds Vault Transit ciphertext for all customer PII fields.

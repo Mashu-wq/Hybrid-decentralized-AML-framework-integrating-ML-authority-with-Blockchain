@@ -45,7 +45,6 @@ def configure_logging(level: str = "info", pretty: bool = False) -> None:
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.stdlib.add_logger_name,
         _drop_pii_processor,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.ExceptionRenderer(),

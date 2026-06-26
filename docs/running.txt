@@ -229,3 +229,11 @@ PART 1 — Start Infrastructure
   3. Python 3.12 vs 3.11 — poetry may warn; should still work. If import errors occur: cd services/ml-service && poetry install.
   4. SAR generation needs S3 — the PDF upload step will fail without AWS S3 configured; the blockchain hash anchor step still succeeds.
   5. Transactions ONLY via Kafka — there is no REST endpoint to submit transactions; must use Kafka CLI or producer.
+
+
+
+
+
+  cd "/home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection"
+  pip install -e .
+  python services/ml-service/main.py

@@ -85,7 +85,7 @@ func (r *KYCRepo) CreateCustomer(ctx context.Context, customer *domain.Customer,
 		customer.LivenessPassed,
 		customer.FaceMatchScore,
 		customer.OCRConfidence,
-		nilIfEmpty(customer.VerifierID),
+		nilIfNotUUID(customer.VerifierID),
 		nilIfEmpty(customer.RejectionReason),
 		nilIfEmpty(customer.BlockchainTxID),
 		customer.ReviewedAt,
@@ -165,7 +165,7 @@ func (r *KYCRepo) UpdateCustomer(ctx context.Context, customer *domain.Customer)
 		customer.LivenessPassed,
 		customer.FaceMatchScore,
 		customer.OCRConfidence,
-		nilIfEmpty(customer.VerifierID),
+		nilIfNotUUID(customer.VerifierID),
 		nilIfEmpty(customer.RejectionReason),
 		nilIfEmpty(customer.BlockchainTxID),
 		customer.ReviewedAt,
@@ -204,7 +204,7 @@ func (r *KYCRepo) UpdateCustomerStatus(
 		string(status),
 		string(riskLevel),
 		nilIfEmpty(reason),
-		nilIfEmpty(verifierID),
+		nilIfNotUUID(verifierID),
 		nilIfEmpty(blockchainTxID),
 	)
 	if err != nil {
@@ -626,6 +626,20 @@ func containsStr(s, substr string) bool {
 
 func nilIfEmpty(s string) interface{} {
 	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nilIfNotUUID returns nil when s is empty or not a valid UUID string.
+// Used for UUID columns (e.g. verifier_id) to prevent PostgreSQL type errors
+// when callers pass free-text identifiers like "analyst-001".
+func nilIfNotUUID(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	// A UUID must be exactly 36 chars in 8-4-4-4-12 hex format.
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
 		return nil
 	}
 	return s

@@ -140,7 +140,7 @@ build: ## Build all Go services
 	@echo "$(BLUE)► Building all Go services...$(RESET)"
 	@for svc in $(GO_SERVICES); do \
 		echo "  Building $$svc..."; \
-		(cd services/$$svc && go build -ldflags="-X main.version=$(IMAGE_TAG)" -o ../../bin/$$svc ./cmd/...) \
+		(cd services/$$svc && go build -ldflags="-X main.version=$(IMAGE_TAG)" -o ../../bin/$$svc ./cmd/server) \
 			&& echo "  $(GREEN)✓ $$svc$(RESET)" \
 			|| echo "  $(RED)✗ $$svc failed$(RESET)"; \
 	done
@@ -149,7 +149,7 @@ build: ## Build all Go services
 build-svc: ## Build a specific service: make build-svc SVC=iam-service
 	@if [ -z "$(SVC)" ]; then echo "$(RED)Usage: make build-svc SVC=<service-name>$(RESET)"; exit 1; fi
 	@echo "$(BLUE)► Building $(SVC)...$(RESET)"
-	@cd services/$(SVC) && go build -ldflags="-X main.version=$(IMAGE_TAG)" -o ../../bin/$(SVC) ./cmd/...
+	@cd services/$(SVC) && go build -ldflags="-X main.version=$(IMAGE_TAG)" -o ../../bin/$(SVC) ./cmd/server
 	@echo "$(GREEN)✓ $(SVC) built$(RESET)"
 
 .PHONY: build-ml

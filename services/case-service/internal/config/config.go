@@ -88,7 +88,7 @@ func Load() (*Config, error) {
 		S3Bucket:           env("S3_EVIDENCE_BUCKET", "fraud-detection-evidence"),
 		S3PresignTTL:       envDuration("S3_PRESIGN_TTL", 15*time.Minute),
 
-		BlockchainServiceURL: env("BLOCKCHAIN_SERVICE_URL", "http://localhost:9001"),
+		BlockchainServiceURL: env("BLOCKCHAIN_SERVICE_ADDR", "http://localhost:9005"),
 
 		Investigators: envStringSlice("INVESTIGATORS", nil),
 		SARThreshold:  envFloat("SAR_THRESHOLD", 0.85),

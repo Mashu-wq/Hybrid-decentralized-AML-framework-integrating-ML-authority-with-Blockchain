@@ -212,6 +212,18 @@ func run() error {
 		log,
 	)
 
+	// KYC events consumer — keeps the Redis customer profile cache (KYC risk
+	// level) up to date so the feature pipeline applies the correct FATF
+	// risk-based alert threshold per customer.
+	kycConsumer := txkafka.NewKYCConsumer(
+		cfg.KafkaBrokers,
+		cfg.KYCEventsTopic,
+		cfg.KYCConsumerGroupID,
+		cfg.KafkaDialTimeout,
+		velocityRepo,
+		log,
+	)
+
 	// -------------------------------------------------------------------------
 	// 10. gRPC server + HTTP health server
 	// -------------------------------------------------------------------------
@@ -224,7 +236,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 
 	go func() {
 		log.Info().
@@ -234,6 +246,12 @@ func run() error {
 			Msg("Kafka consumer starting")
 		if err := consumer.Run(ctx); err != nil {
 			errCh <- fmt.Errorf("kafka consumer: %w", err)
+		}
+	}()
+
+	go func() {
+		if err := kycConsumer.Run(ctx); err != nil {
+			errCh <- fmt.Errorf("kyc events consumer: %w", err)
 		}
 	}()
 

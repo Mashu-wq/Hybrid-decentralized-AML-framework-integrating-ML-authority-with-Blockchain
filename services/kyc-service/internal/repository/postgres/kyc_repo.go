@@ -468,7 +468,17 @@ func (r *KYCRepo) UpdateDocument(ctx context.Context, doc *domain.Document) erro
 // LogAuditEvent persists a compliance audit event. Failures are non-fatal to
 // the primary operation but should be logged by the caller.
 func (r *KYCRepo) LogAuditEvent(ctx context.Context, event *domain.AuditEvent) error {
-	metaJSON, err := json.Marshal(event.Metadata)
+	// actor_id is a UUID column. Callers may pass free-text identifiers
+	// (e.g. "analyst-001"); preserve those in metadata so the actor is not
+	// lost, and store NULL in the typed column to avoid a UUID cast error.
+	metadata := event.Metadata
+	if actorID := nilIfNotUUID(event.ActorID); actorID == nil && event.ActorID != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["actor_ref"] = event.ActorID
+	}
+	metaJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("marshal audit metadata: %w", err)
 	}
@@ -478,9 +488,9 @@ func (r *KYCRepo) LogAuditEvent(ctx context.Context, event *domain.AuditEvent) e
 		) VALUES ($1, $2, $3, $4, $5, $6)
 	`
 	_, err = r.db.Exec(ctx, q,
-		nilIfEmpty(event.CustomerID),
+		nilIfNotUUID(event.CustomerID),
 		event.EventType,
-		nilIfEmpty(event.ActorID),
+		nilIfNotUUID(event.ActorID),
 		nilIfEmpty(event.Reason),
 		metaJSON,
 		event.CreatedAt,

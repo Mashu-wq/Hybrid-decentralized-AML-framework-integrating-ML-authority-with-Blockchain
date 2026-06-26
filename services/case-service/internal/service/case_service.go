@@ -410,10 +410,22 @@ func (s *CaseService) GenerateSAR(ctx context.Context, caseID, generatedBy, note
 		return "", "", fmt.Errorf("generate SAR PDF: %w", err)
 	}
 
-	// Upload to S3
+	// Compute the SAR hash from the in-memory PDF up front. This is the
+	// compliance-critical artefact: it is anchored on-chain regardless of
+	// whether off-chain S3 storage is available.
 	s3Key := s3store.SARKey(caseID)
+	sarHash := sha256SAR(pdfBytes)
+
+	// Upload to S3 — non-fatal. In environments without S3 credentials the
+	// object store is unavailable, but the on-chain hash anchor (the proof a
+	// regulator relies on) must still succeed.
+	uploaded := true
 	if err := s.evidence.PutObject(ctx, s3Key, "application/pdf", pdfBytes); err != nil {
-		return "", "", fmt.Errorf("upload SAR to S3: %w", err)
+		uploaded = false
+		log.Warn().Err(err).
+			Str("case_id", caseID).
+			Str("s3_key", s3Key).
+			Msg("SAR S3 upload failed — proceeding with on-chain hash anchor")
 	}
 
 	// Persist S3 key and move status to PENDING_SAR
@@ -423,28 +435,35 @@ func (s *CaseService) GenerateSAR(ctx context.Context, caseID, generatedBy, note
 	}
 	_ = updated
 
-	// Pre-signed download URL
-	downloadURL, err := s.evidence.PresignGetURL(ctx, s3Key)
-	if err != nil {
-		log.Warn().Err(err).Msg("failed to presign SAR download URL")
+	// Pre-signed download URL (only meaningful if the object was uploaded)
+	var downloadURL string
+	if uploaded {
+		downloadURL, err = s.evidence.PresignGetURL(ctx, s3Key)
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to presign SAR download URL")
+		}
 	}
 
 	// Record investigator action on Fabric audit-channel (non-fatal)
+	uploadNote := "uploaded to S3"
+	if !uploaded {
+		uploadNote = "S3 upload unavailable"
+	}
 	s.auditAsync(ctx, caseID, generatedBy, "SAR_GENERATED",
-		fmt.Sprintf("SAR PDF uploaded to S3: %s. Notes: %s", s3Key, notes))
+		fmt.Sprintf("SAR PDF generated (%s): %s. Notes: %s", uploadNote, s3Key, notes))
 
 	// Anchor the SAR document hash on Fabric — proves the PDF content cannot be
 	// altered after filing. A regulator can recompute SHA-256 of the S3 object
 	// and compare against the on-chain hash.
-	sarHash := sha256SAR(pdfBytes)
 	s.sarAnchorAsync(caseID, sarHash, s3Key, time.Now().UTC().Format(time.RFC3339), generatedBy)
 
 	log.Info().
 		Str("case_id", caseID).
 		Str("s3_key", s3Key).
 		Str("sar_hash", sarHash).
+		Bool("s3_uploaded", uploaded).
 		Str("generated_by", generatedBy).
-		Msg("SAR generated, uploaded, and hash anchored to blockchain")
+		Msg("SAR generated and hash anchored to blockchain")
 
 	return s3Key, downloadURL, nil
 }

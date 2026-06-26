@@ -48,7 +48,9 @@ start_service "analytics-service"  "analytics-service"
 # Start ML service (Python)
 log_info "Starting ml-service..."
 cd "$REPO_ROOT/services/ml-service"
-PYTHONPATH="$REPO_ROOT" poetry run uvicorn main:app --host 0.0.0.0 --port 8000 \
+PYTHONPATH="$REPO_ROOT" \
+MODEL_ARTIFACT_PATH="$REPO_ROOT/ml/artifacts" \
+poetry run uvicorn main:app --host 0.0.0.0 --port 8000 \
     > "$REPO_ROOT/logs/ml-service.log" 2>&1 &
 PIDS+=($!)
 log_success "ml-service started (PID ${PIDS[-1]})"

@@ -387,20 +387,34 @@ func (s *KYCService) UpdateKYCStatus(ctx context.Context, in *UpdateKYCStatusInp
 		s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("failed to publish KYC_STATUS_UPDATED event")
 	}
 
-	// Async blockchain update.
+	// Async blockchain update. The on-chain registration (RegisterCustomer) is
+	// itself anchored asynchronously, so a status update issued shortly after
+	// registration can race ahead of it — the chaincode then reports the record
+	// as "not found". Retry with backoff until the registration has committed,
+	// then give up non-fatally.
 	go func() {
-		bcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		txID, err := s.blockchain.UpdateKYCOnChain(bcCtx, in.CustomerID, in.Status, in.RiskLevel, in.Reason, in.VerifierID)
-		if err != nil {
+		const maxAttempts = 6
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			bcCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			txID, err := s.blockchain.UpdateKYCOnChain(bcCtx, in.CustomerID, in.Status, in.RiskLevel, in.Reason, in.VerifierID)
+			cancel()
+			if err == nil {
+				updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				customer.BlockchainTxID = txID
+				if updateErr := s.repo.UpdateCustomer(updateCtx, customer); updateErr != nil {
+					s.log.Error().Err(updateErr).Str("customer_id", in.CustomerID).Msg("failed to persist blockchain TX ID after status update")
+				}
+				updateCancel()
+				return
+			}
+			if attempt < maxAttempts && isRecordNotOnChainYet(err) {
+				s.log.Warn().Err(err).Int("attempt", attempt).Str("customer_id", in.CustomerID).
+					Msg("on-chain KYC record not ready; retrying status update")
+				time.Sleep(time.Duration(attempt) * 750 * time.Millisecond)
+				continue
+			}
 			s.log.Error().Err(err).Str("customer_id", in.CustomerID).Msg("blockchain update failed (non-fatal)")
 			return
-		}
-		updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer updateCancel()
-		customer.BlockchainTxID = txID
-		if updateErr := s.repo.UpdateCustomer(updateCtx, customer); updateErr != nil {
-			s.log.Error().Err(updateErr).Str("customer_id", in.CustomerID).Msg("failed to persist blockchain TX ID after status update")
 		}
 	}()
 
@@ -411,6 +425,13 @@ func (s *KYCService) UpdateKYCStatus(ctx context.Context, in *UpdateKYCStatusInp
 		Msg("KYC status updated")
 
 	return customer, nil
+}
+
+// isRecordNotOnChainYet reports whether a blockchain error indicates the KYC
+// record has not been committed on-chain yet (the registration anchor is still
+// in flight), which is a transient, retryable condition.
+func isRecordNotOnChainYet(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
 }
 
 // ---------------------------------------------------------------------------

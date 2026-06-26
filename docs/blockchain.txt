@@ -1,0 +1,723 @@
+================================================================================
+  BLOCKCHAIN ARCHITECTURE — KYC/AML Fraud Detection System
+  Thesis Project by Mayesha Marzia Zaman Mim
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1.  Overview
+2.  Network Topology
+3.  Organizations & Their Roles
+4.  Orderer Configuration (Raft Consensus)
+5.  Channels
+6.  Chaincode (Smart Contracts)
+    6.1  kyc-contract   (kyc-channel)
+    6.2  alert-contract (alert-channel)
+    6.3  audit-contract (audit-channel)
+7.  Blockchain Service (Go Gateway Wrapper)
+8.  How Services Interact with Blockchain
+9.  Transaction Lifecycle (Step-by-Step)
+10. Privacy & Data Protection Model
+11. Security Controls
+12. Key Design Decisions
+13. Measured Performance
+14. Known Limitations & Future Work
+
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+The blockchain layer of this system is built on Hyperledger Fabric v2.5 —
+an enterprise-grade permissioned blockchain framework. Unlike public blockchains
+(Bitcoin, Ethereum), Hyperledger Fabric allows controlled participation: only
+authorized organizations can join, read, and write to the network.
+
+WHY HYPERLEDGER FABRIC (NOT A DATABASE)?
+
+  Traditional AML systems store audit records in a database controlled by the
+  bank itself. A dishonest bank could:
+    - Delete a suspicious transaction record before a regulator audit
+    - Alter a SAR (Suspicious Activity Report) after filing
+    - Claim a fraudulent transaction was never processed
+
+  Hyperledger Fabric solves this through:
+    - IMMUTABILITY    : once written, a block cannot be altered without
+                        invalidating all subsequent blocks
+    - MULTI-ORG SIGN  : MAJORITY endorsement means no single party can
+                        write data unilaterally
+    - REGULATOR PEER  : Org2 (Regulator) holds its own independent copy
+                        of the ledger — absence of a record is detectable
+    - TAMPER EVIDENCE : every audit record carries a SHA-256 hash of its
+                        own content, computed at write time inside chaincode
+
+
+================================================================================
+2. NETWORK TOPOLOGY
+================================================================================
+
+  [Org1 - PrimaryBank]          [Org2 - Regulator]         [Org3 - PartnerBank]
+         |                              |                            |
+   peer0.org1:7051              peer0.org2:9051             peer0.org3:11051
+         |                              |                            |
+   orderer0:7050                orderer1:8050               orderer2:9050
+         |                              |                            |
+         +------------------------------+----------------------------+
+                                        |
+                              Raft Consensus Cluster
+                         (3 orderers, leader-elected)
+                                        |
+                        +---------------+---------------+
+                        |               |               |
+                   kyc-channel    alert-channel    audit-channel
+                        |               |               |
+                  kyc-contract   alert-contract   audit-contract
+
+
+  Domain: fraud-detection.example.com
+
+  Peer endpoints:
+    peer0.org1.fraud-detection.example.com:7051   (PrimaryBank)
+    peer0.org2.fraud-detection.example.com:9051   (Regulator)
+    peer0.org3.fraud-detection.example.com:11051  (PartnerBank)
+
+  Orderer endpoints:
+    orderer0.fraud-detection.example.com:7050  (administered by Org1)
+    orderer1.fraud-detection.example.com:8050  (administered by Org2)
+    orderer2.fraud-detection.example.com:9050  (administered by Org3)
+
+  All communication is protected by TLS 1.3.
+  MSP certificates are managed under blockchain/network/crypto-config/
+
+
+================================================================================
+3. ORGANIZATIONS & THEIR ROLES
+================================================================================
+
+  ORG1 — PrimaryBank (Org1MSP)
+  ------------------------------
+  Role    : The bank that onboards customers, processes transactions, and
+            generates fraud alerts.
+  Peer    : peer0.org1.fraud-detection.example.com:7051
+  Orderer : orderer0.fraud-detection.example.com:7050
+  Rights  : Can READ and WRITE to all 3 channels (kyc, alert, audit)
+  In AML  : Submits KYC registrations, transaction receipts, fraud alerts,
+            and SAR hashes to the blockchain
+
+  ORG2 — Regulator (Org2MSP)
+  ----------------------------
+  Role    : The financial regulator (e.g., central bank or FIU) that
+            monitors AML compliance independently.
+  Peer    : peer0.org2.fraud-detection.example.com:9051
+  Orderer : orderer1.fraud-detection.example.com:8050
+  Rights  : Can READ and WRITE to all 3 channels
+  In AML  : Independently holds a full copy of the ledger. Can run
+            GetComplianceReport and GetAuditTrail at any time without
+            the bank's cooperation. This is the key regulatory value.
+
+  ORG3 — PartnerBank (Org3MSP)
+  ------------------------------
+  Role    : A partner financial institution (correspondent bank or fintech)
+            that participates in cross-institution fraud signal sharing.
+  Peer    : peer0.org3.fraud-detection.example.com:11051
+  Orderer : orderer2.fraud-detection.example.com:9050
+  Rights  : Can READ and WRITE to all 3 channels
+  In AML  : Can observe fraud alerts for shared customers, enabling
+            cross-institution AML cooperation
+
+  KEY POINT — No organization has unilateral control:
+    - Writing a block requires MAJORITY endorsement (at least 2 of 3 orgs)
+    - Each org administers one orderer — no single org controls ordering
+    - Any orderer configuration change requires MAJORITY Admins
+
+
+================================================================================
+4. ORDERER CONFIGURATION (RAFT CONSENSUS)
+================================================================================
+
+  Consensus algorithm : Raft (etcdraft) — CFT (Crash Fault Tolerant)
+  Number of orderers  : 3 (one per organization)
+  Fault tolerance     : Can survive 1 orderer failure (floor((3-1)/2) = 1)
+
+  Raft works by electing a leader among the 3 orderers. The leader:
+    - Collects transactions from clients
+    - Cuts them into blocks
+    - Replicates the block to follower orderers
+    - Commits once a MAJORITY (2 of 3) acknowledge receipt
+
+  Block configuration (from configtx.yaml):
+    BatchTimeout         : 2 seconds   (max wait before cutting a block)
+    MaxMessageCount      : 20          (max transactions per block)
+    AbsoluteMaxBytes     : 99 MB       (hard size limit per block)
+    PreferredMaxBytes    : 512 KB      (soft size limit per block)
+
+  BlockValidation policy: ANY Writers
+    NOTE: In Raft, the elected leader alone signs each block (single
+    signature). Multi-org security is enforced at the CONSENSUS level
+    (majority quorum), not at the block signature level. Using MAJORITY
+    Writers for block validation would require 3 signatures from a
+    single-leader system and would permanently break block delivery.
+    This is a known Raft design characteristic, not a security weakness.
+
+  Endorsement policy (application level): MAJORITY Endorsement
+    This means every chaincode transaction (write) must be endorsed by
+    peers from at least 2 of the 3 organizations before it is ordered.
+    This IS the multi-org security guarantee for data integrity.
+
+
+================================================================================
+5. CHANNELS
+================================================================================
+
+  A Fabric channel is an isolated ledger — organizations on one channel
+  cannot see data on another channel. All 3 organizations are members of
+  all 3 channels (regulator mandate for full AML visibility).
+
+  +----------------+------------------+---------------------------------------+
+  | Channel        | Chaincode        | Purpose                               |
+  +----------------+------------------+---------------------------------------+
+  | kyc-channel    | kyc-contract     | Customer identity & KYC lifecycle     |
+  | alert-channel  | alert-contract   | Fraud alerts & investigation workflow |
+  | audit-channel  | audit-contract   | Immutable processing receipts, SAR    |
+  |                |                  | hashes, model prediction records      |
+  +----------------+------------------+---------------------------------------+
+
+  Why 3 separate channels?
+    - SEPARATION OF CONCERN: KYC records, fraud alerts, and audit receipts
+      have different access patterns and data retention needs
+    - PERFORMANCE: high-volume audit writes (every transaction) are isolated
+      from lower-volume KYC writes (customer onboarding events)
+    - FUTURE PDC SUPPORT: Private Data Collections can be added per-channel
+      to give the regulator exclusive access to sensitive fields
+
+
+================================================================================
+6. CHAINCODE (SMART CONTRACTS)
+================================================================================
+
+  All chaincodes are written in Go using the Fabric shim API.
+  Source: blockchain/chaincode/
+  Deployed as: .tar.gz packages (kyc-contract.tar.gz, etc.)
+
+  -----------------------------------------------------------------------
+  6.1 KYC-CONTRACT  (deployed on kyc-channel)
+  -----------------------------------------------------------------------
+  File: blockchain/chaincode/kyc-contract/contract.go
+
+  PURPOSE: Manages the full lifecycle of customer KYC (Know Your Customer)
+  records on the blockchain. Provides an immutable, auditable identity
+  registry that cannot be altered by any single organization.
+
+  DATA STRUCTURE — KYCRecord:
+    customerID    : unique customer identifier
+    identityHash  : SHA-256(document) — PII never stored on-chain
+    kycStatus     : PENDING | APPROVED | REJECTED | SUSPENDED
+    riskLevel     : UNSPECIFIED | LOW | MEDIUM | HIGH | CRITICAL
+    verifierID    : ID of the compliance officer who verified
+    reason        : mandatory for REJECTED and SUSPENDED transitions
+    createdAt     : RFC3339 timestamp (from Fabric transaction timestamp)
+    updatedAt     : RFC3339 timestamp of last update
+    txId          : Fabric transaction ID of the last write
+
+  FUNCTIONS:
+    RegisterCustomer(customerID, identityHash, kycStatus, riskLevel, verifierID)
+      - Creates a new KYC record on the ledger
+      - Validates identity hash format (min 16 chars)
+      - Prevents duplicate registration (returns error if already exists)
+      - Creates a composite index: kyc~status~customer for status queries
+      - Appends a history snapshot: kyc~history~customer index
+      - Emits KYC_REGISTERED event
+
+    UpdateKYCStatus(customerID, newStatus, riskLevel, reason)
+      - Updates an existing customer's KYC status
+      - Enforces state machine transitions:
+          PENDING    → APPROVED, REJECTED
+          APPROVED   → SUSPENDED, REJECTED
+          SUSPENDED  → APPROVED, REJECTED
+          REJECTED   → PENDING
+      - Reason is mandatory for REJECTED and SUSPENDED
+      - Updates composite indexes atomically
+      - Emits KYC_STATUS_UPDATED event
+
+    GetKYCRecord(customerID)
+      - Read-only query, returns current KYC record as JSON
+      - Does not consume Fabric endorsement (query, not transaction)
+
+    GetKYCHistory(customerID)
+      - Returns full history of KYC status changes for a customer
+      - Uses GetHistoryForKey (native Fabric ledger history)
+      - Falls back to composite key snapshots if history not available
+
+    ListPendingKYC()
+      - Returns all customers with status = PENDING
+      - Uses composite index kyc~status~customer for efficient lookup
+      - Used by compliance officers to process pending applications
+
+  KEY DESIGN NOTES:
+    - PII is never stored: only SHA-256(document) is written to ledger
+    - The composite index kyc~status~customer enables O(1) pending queries
+      without scanning the full ledger
+    - State machine validation prevents illegal transitions at chaincode level
+
+  -----------------------------------------------------------------------
+  6.2 ALERT-CONTRACT  (deployed on alert-channel)
+  -----------------------------------------------------------------------
+  File: blockchain/chaincode/alert-contract/contract.go
+
+  PURPOSE: Creates and tracks immutable fraud alert records on the
+  blockchain. Provides a tamper-proof investigation workflow that
+  regulators can audit independently.
+
+  DATA STRUCTURE — AlertRecord:
+    alertID       : unique alert identifier
+    customerID    : customer who triggered the alert
+    txHash        : hash of the suspicious transaction
+    fraudProb     : ML model fraud probability (0.0 to 1.0)
+    riskScore     : composite risk score (0 to 100)
+    riskLevel     : derived from fraudProb (see derivation below)
+    status        : OPEN | INVESTIGATING | ESCALATED | RESOLVED | FALSE_POSITIVE
+    modelVersion  : which ML model version made the prediction
+    investigatorID: compliance officer handling the case (set on update)
+    notes         : investigation notes (mandatory for resolution)
+    createdAt/updatedAt: RFC3339 timestamps
+
+  RISK LEVEL DERIVATION (from fraudProb):
+    fraudProb > 0.85  → CRITICAL
+    fraudProb >= 0.70 → HIGH
+    fraudProb >= 0.50 → MEDIUM
+    fraudProb < 0.50  → LOW
+
+  FUNCTIONS:
+    CreateAlert(alertID, customerID, txHash, fraudProb, riskScore, modelVersion)
+      - Creates a new fraud alert on the ledger
+      - Validates fraudProb is in [0, 1] and riskScore in [0, 100]
+      - Creates 3 composite indexes for efficient queries:
+          alert~customer~alert    (lookup by customerID)
+          alert~risk~alert        (lookup by riskLevel)
+          alert~status~alert      (lookup by status)
+      - Rebuilds AlertStatistics aggregate (stored as ALERT_STATS key)
+      - Emits ALERT_CREATED event
+
+    UpdateAlertStatus(alertID, status, investigatorID, notes)
+      - Updates alert status through the investigation workflow
+      - State machine transitions:
+          OPEN           → INVESTIGATING, ESCALATED, RESOLVED, FALSE_POSITIVE
+          INVESTIGATING  → RESOLVED, FALSE_POSITIVE, ESCALATED
+          ESCALATED      → INVESTIGATING, RESOLVED
+          RESOLVED       → (terminal — no further transitions)
+          FALSE_POSITIVE → (terminal — no further transitions)
+      - investigatorID is mandatory for any non-OPEN status
+      - notes are mandatory for RESOLVED, ESCALATED, FALSE_POSITIVE
+      - Emits ALERT_STATUS_UPDATED event
+
+    GetAlertsByCustomer(customerID)
+      - Returns all alerts for a given customer, sorted by createdAt
+      - Uses alert~customer~alert composite index
+
+    GetAlertsByRiskLevel(level)
+      - Returns all alerts at a given risk level
+      - Uses CouchDB rich query if available, falls back to composite index
+
+    GetAlertStats()
+      - Returns pre-computed AlertStatistics aggregate:
+          totalAlerts, openAlerts, criticalAlerts, highAlerts,
+          mediumAlerts, lowAlerts, resolvedAlerts, falsePositives,
+          investigatingAlerts, escalatedAlerts, averageFraudProb
+
+  KEY DESIGN NOTES:
+    - AlertStatistics is rebuilt on every write (not incrementally updated)
+      to ensure consistency — safe because write frequency is low
+    - Terminal states (RESOLVED, FALSE_POSITIVE) cannot be transitioned out
+      — this preserves the integrity of investigation outcomes
+    - txHash links the on-chain alert back to the MongoDB transaction record
+
+  -----------------------------------------------------------------------
+  6.3 AUDIT-CONTRACT  (deployed on audit-channel)
+  -----------------------------------------------------------------------
+  File: blockchain/chaincode/audit-contract/contract.go
+
+  PURPOSE: Provides an immutable, tamper-evident audit trail for all
+  compliance-critical events in the AML pipeline. This is the most
+  important contract for regulatory compliance.
+
+  DATA STRUCTURE — AuditRecord:
+    recordID    : unique audit record ID
+    recordType  : TRANSACTION_PROCESSED | MODEL_PREDICTION |
+                  SAR_FILED | INVESTIGATOR_ACTION
+    entityID    : ID of the entity this record is about
+    entityType  : CUSTOMER | CASE | ALERT | MODEL | TRANSACTION
+    actorID     : who/what created this record (model version, user ID)
+    description : human-readable description
+    data        : key-value map with type-specific fields
+    hash        : SHA-256 of the record content (computed at write time)
+    createdAt   : RFC3339 timestamp
+    txId        : Fabric transaction ID
+
+  RECORD TYPES AND THEIR FIELDS:
+
+  TRANSACTION_PROCESSED:
+    Written for EVERY transaction that passes through the ML pipeline
+    (whether flagged as fraud or not).
+    Fields: txHash, customerID, amountUSD, currencyCode, channel,
+            countryCode, processedAt, fraudProbability, riskLevel,
+            alertFired, alertID, modelVersion, predictionID
+    This closes the "fabrication gap" — the bank cannot hide a transaction
+    by simply not processing it, because the absence of a receipt is
+    itself detectable by the regulator's independent ledger copy.
+
+  MODEL_PREDICTION:
+    Written when the ML service returns a prediction.
+    Fields: modelVersion, features (85-dim vector), prediction,
+            shapValues (SHAP explainability JSON)
+    This makes ML decisions auditable — regulators can verify which
+    model version made a decision and why (via SHAP values).
+
+  SAR_FILED:
+    Written when a Suspicious Activity Report PDF is generated.
+    Fields: caseID, sarHash (SHA-256 of PDF), s3Key, filedAt, generatedBy
+    The PDF is stored in S3; only its hash is on-chain. This proves the
+    document content has not been altered after filing — regulators can
+    verify by re-hashing the S3 document and comparing to on-chain hash.
+
+  INVESTIGATOR_ACTION:
+    Written when a compliance officer takes an action on a case.
+    Fields: action, evidence
+    Creates an immutable record of human decisions in the investigation.
+
+  FUNCTIONS:
+    RecordTransactionProcessed(14 args)
+      - Validates all 14 fields (fraud probability range, RFC3339 timestamps,
+        risk level enum, boolean alertFired)
+      - Computes SHA-256 hash of the record at write time
+      - Creates composite index: audit~entityType~entityID~recordID
+      - Emits AUDIT_RECORDED event
+      - recordID = txHash (natural idempotency — one receipt per tx)
+
+    RecordModelPrediction(predictionID, modelVersion, features, prediction, shapValues)
+      - Anchors ML model decisions on-chain with full SHAP context
+      - Enables post-hoc model audit by regulators
+
+    RecordSARFiled(recordID, caseID, sarHash, s3Key, filedAt, generatedBy)
+      - Anchors SAR document hash on-chain
+      - recordID defaults to caseID + "-sar" (one SAR per case idempotency)
+
+    RecordInvestigatorAction(actionID, investigatorID, caseID, action, evidence)
+      - Records human investigator decisions immutably
+
+    GetAuditTrail(entityID, entityType)
+      - Returns all audit records for an entity, sorted by createdAt
+      - Uses composite index for efficient lookup
+      - entityType must be: CUSTOMER | CASE | ALERT | MODEL | TRANSACTION
+
+    GetComplianceReport(startDate, endDate)
+      - Scans all audit records within a date range
+      - Returns aggregated counts by type and entity type
+      - Returns up to 10 sample records
+      - Used by regulators for periodic compliance reporting
+
+  KEY DESIGN NOTES:
+    - Each AuditRecord has its SHA-256 hash computed inside the chaincode
+      (not by the client) — the client cannot forge the hash
+    - The audit-channel carries the highest write volume (every transaction)
+      and is isolated from kyc/alert channels for this reason
+    - TRANSACTION_PROCESSED is fire-and-forget from the transaction service
+      — it never blocks the ML pipeline (async goroutine)
+
+
+================================================================================
+7. BLOCKCHAIN SERVICE (GO GATEWAY WRAPPER)
+================================================================================
+
+  Location  : services/blockchain-service/
+  Port      : HTTP :9005
+  Language  : Go
+  SDK       : Hyperledger Fabric Gateway SDK (fabric-gateway v1.x)
+
+  The Blockchain Service is the single entry point for all other
+  microservices to interact with the Hyperledger Fabric network.
+  No other service connects to Fabric directly.
+
+  INTERNAL STRUCTURE:
+    cmd/server/main.go          — HTTP server entry point
+    internal/config/config.go   — reads FABRIC_* env vars
+    internal/fabric/client.go   — Fabric Gateway SDK connection
+    internal/fabric/stub.go     — test stub (no real Fabric needed for tests)
+    internal/service/service.go — business logic layer
+    internal/http/handler.go    — HTTP route handlers
+    internal/http/server.go     — HTTP server setup
+    internal/kafka/publisher.go — publishes chaincode events to Kafka
+
+  HOW IT CONNECTS TO FABRIC:
+    1. Reads MSP credentials from FABRIC_MSP_ID, FABRIC_CERT_PATH,
+       FABRIC_KEY_PATH environment variables
+    2. Opens a gRPC TLS connection to the peer's Gateway service
+       (not directly to the peer's gossip port)
+    3. Creates a Fabric Gateway client using the identity credentials
+    4. All Invoke (write) and Query (read) calls go through this client
+
+  GATEWAY PATTERN:
+    The Fabric Gateway SDK (introduced in Fabric 2.4) simplifies client
+    connections. Instead of connecting to every endorsing peer directly,
+    the client connects to ONE peer's Gateway service. That peer then:
+      - Collects endorsements from other required peers internally
+      - Submits the endorsed transaction to the orderer
+      - Returns the committed result to the client
+    This significantly simplifies the client code.
+
+  HTTP API ENDPOINTS (port 9005):
+    POST /kyc/register                 → RegisterCustomer on kyc-channel
+    PUT  /kyc/status                   → UpdateKYCStatus on kyc-channel
+    GET  /kyc/:customerID              → GetKYCRecord on kyc-channel
+    GET  /kyc/:customerID/history      → GetKYCHistory on kyc-channel
+    GET  /kyc/pending                  → ListPendingKYC on kyc-channel
+
+    POST /alerts                       → CreateAlert on alert-channel
+    PUT  /alerts/:alertID/status       → UpdateAlertStatus on alert-channel
+    GET  /alerts/customer/:customerID  → GetAlertsByCustomer on alert-channel
+    GET  /alerts/risk/:level           → GetAlertsByRiskLevel on alert-channel
+    GET  /alerts/stats                 → GetAlertStats on alert-channel
+
+    POST /audit/transaction            → RecordTransactionProcessed on audit-channel
+    POST /audit/prediction             → RecordModelPrediction on audit-channel
+    POST /audit/sar                    → RecordSARFiled on audit-channel
+    POST /audit/action                 → RecordInvestigatorAction on audit-channel
+    GET  /audit/trail/:entityType/:entityID → GetAuditTrail on audit-channel
+    GET  /audit/compliance             → GetComplianceReport on audit-channel
+
+    GET  /health                       → Gateway connectivity health check
+
+  CHAINCODE EVENTS:
+    The blockchain service also listens for chaincode events
+    (KYC_REGISTERED, ALERT_CREATED, AUDIT_RECORDED, etc.) and
+    publishes them to Kafka topics. Downstream services (alert-service,
+    case-service) can subscribe to these events for real-time reactions.
+
+
+================================================================================
+8. HOW SERVICES INTERACT WITH BLOCKCHAIN
+================================================================================
+
+  SERVICE              ACTION                          BLOCKCHAIN CALL
+  -------------------  ------------------------------  -----------------------
+  KYC Service          Customer onboarding             POST /kyc/register
+  KYC Service          Update verification status      PUT  /kyc/status
+  Transaction Service  Anchor ML receipt (async)       POST /audit/transaction
+  Transaction Service  Anchor SHAP prediction          POST /audit/prediction
+  Alert Service        Create fraud alert on-chain     POST /alerts
+  Alert Service        Read customer alerts            GET  /alerts/customer/:id
+  Case Service         File SAR hash on-chain          POST /audit/sar
+  Case Service         Record investigator action      POST /audit/action
+  Analytics Service    Pull compliance report          GET  /audit/compliance
+  Any service          Verify KYC status               GET  /kyc/:customerID
+
+  CRITICAL: AnchorTransactionReceipt() in transaction-service is
+  FIRE-AND-FORGET — it runs in a goroutine and never blocks the main
+  ML scoring pipeline. A blockchain failure does NOT fail a transaction.
+  This is an intentional design decision to maintain pipeline throughput.
+
+
+================================================================================
+9. TRANSACTION LIFECYCLE (STEP-BY-STEP)
+================================================================================
+
+  EXAMPLE: A wire transfer enters the system
+
+  Step 1  — Transaction arrives at Transaction Service via Kafka
+            (topic: transactions.raw)
+
+  Step 2  — Feature extraction from Redis (velocity, KYC risk, etc.)
+
+  Step 3  — gRPC call to ML Service → PredictFraud
+            Returns: fraudProbability, riskLevel, shapValues
+
+  Step 4  — If fraudProbability > threshold:
+              Kafka publish to alerts.created topic
+
+  Step 5  — MongoDB persist: enriched transaction + features + prediction
+
+  Step 6  — ASYNC (goroutine): AnchorTransactionReceipt()
+              → POST /audit/transaction to Blockchain Service
+              → Blockchain Service invokes RecordTransactionProcessed
+                on audit-channel
+              → Fabric Gateway collects MAJORITY endorsements
+              → Orderer cuts block (within 2s BatchTimeout)
+              → Block committed to all 3 org ledgers
+              → Receipt is now immutable and regulator-visible
+
+  Step 7  — Alert Service consumes alerts.created Kafka topic
+              → POST /alerts to Blockchain Service
+              → alert-contract creates immutable alert record
+              → Alert pushed to compliance dashboard via WebSocket
+
+  Step 8  — If SAR filed by Case Service:
+              → SHA-256(SAR PDF) computed
+              → POST /audit/sar to Blockchain Service
+              → audit-contract anchors hash on audit-channel
+              → Regulator can verify PDF integrity at any time
+
+  BLOCK COMMIT LATENCY:
+    Measured: ~400–900 ms (within BatchTimeout of 2s)
+    This is acceptable because blockchain writes are all asynchronous
+    and never in the critical path of transaction scoring.
+
+
+================================================================================
+10. PRIVACY & DATA PROTECTION MODEL
+================================================================================
+
+  WHAT IS ON-CHAIN (stored on blockchain):
+    ✓ SHA-256(customer identity document) — NOT the document itself
+    ✓ KYC status and risk level
+    ✓ Fraud probability score
+    ✓ Transaction hash (txHash)
+    ✓ Transaction amount and currency code
+    ✓ Country code and channel
+    ✓ Model version and prediction ID
+    ✓ SHA-256(SAR PDF) — NOT the PDF itself
+    ✓ SHAP feature importance values (aggregated, not raw features)
+    ✓ Investigator action descriptions
+
+  WHAT IS NOT ON-CHAIN (stored off-chain):
+    ✗ Customer name, address, date of birth, passport number (PII)
+    ✗ Full 85-dim feature vector of a transaction
+    ✗ SAR PDF document (stored in S3)
+    ✗ Raw transaction details (stored in MongoDB)
+    ✗ Customer account numbers
+
+  PII PROTECTION:
+    All customer PII is encrypted at rest using AES-256-GCM via
+    HashiCorp Vault's transit engine (Encryption Service, gRPC :50067).
+    Identity on-chain = SHA-256(document), making the ledger GDPR-safe.
+
+  WHY ALL 3 ORGS ON ALL 3 CHANNELS?
+    Regulatory mandate: the regulator (Org2) must have full independent
+    visibility into KYC, alerts, and audit data. Separating the regulator
+    onto different channels would defeat the compliance purpose.
+    Future work: Private Data Collections (PDC) can give Org2 exclusive
+    access to certain sensitive fields while keeping others channel-wide.
+
+
+================================================================================
+11. SECURITY CONTROLS
+================================================================================
+
+  CONTROL                    IMPLEMENTATION
+  -------------------------  --------------------------------------------------
+  Transport security         TLS 1.3 on all peer and orderer gRPC connections
+  Identity                   X.509 certificates issued per org (cryptogen)
+  Endorsement policy         MAJORITY — at least 2 of 3 orgs must endorse
+  Block immutability         SHA-256 chained blocks (altering one invalidates all)
+  Record integrity           SHA-256 hash of each audit record (computed in chaincode)
+  PII protection             SHA-256(document) on-chain; AES-256-GCM off-chain
+  SAR document integrity     SHA-256(PDF) anchored on-chain; S3 stores actual PDF
+  Access control             MSP-based identity; only authorized clients can invoke
+  Fabrication gap closure    EVERY transaction gets a TRANSACTION_PROCESSED receipt
+  Regulator independence     Org2 holds full ledger copy; no bank cooperation needed
+  Smart contract audit       All chaincode validated at deployment via _lifecycle
+
+
+================================================================================
+12. KEY DESIGN DECISIONS
+================================================================================
+
+  DECISION 1 — Closing the Fabrication Gap
+    Problem: A bank could process a fraudulent transaction but not report it,
+             then later claim it was never seen.
+    Solution: RecordTransactionProcessed is called for EVERY ML-scored
+              transaction (not just flagged ones). The regulator's ledger
+              copy makes absence of a receipt detectable. The bank cannot
+              selectively omit receipts without the regulator noticing.
+
+  DECISION 2 — Fire-and-Forget Blockchain Writes
+    Problem: Blockchain commits take 400–900ms. Waiting for confirmation
+             would throttle transaction processing throughput.
+    Solution: AnchorTransactionReceipt() runs in a background goroutine.
+              The ML pipeline never waits for blockchain confirmation.
+              Failure to write is logged (for retry) but does not fail the
+              transaction scoring. This is acceptable because receipts are
+              compliance artifacts, not real-time gating controls.
+
+  DECISION 3 — Three Separate Channels
+    Alternatives considered: one channel for everything, or one channel
+    per org. Three purpose-specific channels chosen because:
+      - kyc-channel write frequency: low (customer onboarding events)
+      - alert-channel write frequency: medium (flagged transactions)
+      - audit-channel write frequency: high (every transaction)
+    Mixing them on one channel would cause the high-volume audit writes
+    to compete with KYC and alert writes in the same block batch.
+
+  DECISION 4 — Raft over Kafka Orderer
+    Raft chosen over the deprecated Kafka orderer because:
+      - Native to Fabric 2.x
+      - Simpler operational model (no external Zookeeper/Kafka dependency
+        for consensus — Kafka is used separately for application messaging)
+      - Sufficient fault tolerance (1 orderer failure) for a 3-org network
+
+  DECISION 5 — SHA-256 for Identity Hashing
+    Customer identity documents are hashed with SHA-256 before storage.
+    This means:
+      - Two customers cannot claim the same document
+      - The bank can verify a document by hashing and querying the ledger
+      - Even if the ledger were leaked, no PII is exposed
+      - GDPR Article 17 (right to erasure) can be satisfied by destroying
+        the original document — the hash alone reveals nothing
+
+  DECISION 6 — MAJORITY Endorsement Policy
+    The LifecycleEndorsement and Endorsement policies are both set to
+    MAJORITY. This means chaincode deployment AND data writes both require
+    2 of 3 organizations to sign. No single organization (not even the
+    bank operating the system) can unilaterally write to the ledger.
+
+
+================================================================================
+13. MEASURED PERFORMANCE
+================================================================================
+
+  Block commit latency   : 400 – 900 ms (measured, not estimated)
+  Batch timeout          : 2,000 ms (maximum wait before block is cut)
+  Max tx per block       : 20
+  Fault tolerance        : 1 orderer can fail with no service interruption
+  Pipeline impact        : 0 ms (all blockchain writes are asynchronous)
+
+  The 400–900ms commit latency is well within acceptable range for an
+  async compliance audit trail. Real-time fraud scoring is not affected.
+
+
+================================================================================
+14. KNOWN LIMITATIONS & FUTURE WORK
+================================================================================
+
+  LIMITATION 1 — No Private Data Collections (PDC)
+    Currently all 3 orgs see all fields in all records. PDC would allow
+    certain fields (e.g., raw feature vectors) to be visible only to the
+    regulator's peer, providing feature-level access control.
+    Status: Identified as future work.
+
+  LIMITATION 2 — Single Peer per Org
+    Each organization runs one peer. For production, each org should
+    run multiple peers for high availability and gossip redundancy.
+
+  LIMITATION 3 — Raft is CFT, not BFT
+    Raft tolerates crash failures but not Byzantine (malicious) failures.
+    If an orderer node were compromised and sent malicious data, Raft
+    cannot detect this. BFT consensus (e.g., BFT-SMaRt) would be required
+    for a fully adversarial environment. For a 3-org cooperative network
+    with legal agreements, CFT is accepted practice.
+
+  LIMITATION 4 — No On-Chain Retry for Failed Receipts
+    If AnchorTransactionReceipt() fails (blockchain service down),
+    the receipt is lost. A retry queue or dead-letter mechanism in
+    the transaction service would close this gap.
+
+  LIMITATION 5 — Compliance Report Performance
+    GetComplianceReport does a full ledger scan (GetStateByRange).
+    For large audit channels with millions of records, this will be
+    slow. A CouchDB index on createdAt would improve this significantly.
+
+
+================================================================================
+  END OF BLOCKCHAIN ARCHITECTURE DOCUMENTATION
+  Project: KYC/AML Fraud Detection System
+  Author:  Mayesha Marzia Zaman Mim
+  Date:    2026-06-26
+================================================================================

@@ -22,7 +22,9 @@ type Config struct {
 	KafkaBrokers          []string
 	TransactionsRawTopic  string // consumer: transactions.raw
 	AlertsCreatedTopic    string // producer: alerts.created
+	KYCEventsTopic        string // consumer: kyc.events (customer risk profile cache)
 	ConsumerGroupID       string
+	KYCConsumerGroupID    string
 	KafkaDialTimeout      int // seconds
 	KafkaWorkers          int // parallel message processors
 
@@ -79,7 +81,9 @@ func Load() (*Config, error) {
 		KafkaBrokers:         envStringSlice("KAFKA_BROKERS", []string{"localhost:9092"}),
 		TransactionsRawTopic: env("TRANSACTIONS_RAW_TOPIC", "transactions.raw"),
 		AlertsCreatedTopic:   env("ALERTS_CREATED_TOPIC", "alerts.created"),
+		KYCEventsTopic:       env("KAFKA_TOPIC_KYC_EVENTS", "kyc.events"),
 		ConsumerGroupID:      env("KAFKA_CONSUMER_GROUP", "transaction-service-cg"),
+		KYCConsumerGroupID:   env("KAFKA_KYC_CONSUMER_GROUP", "transaction-service-kyc-cg"),
 		KafkaDialTimeout:     envInt("KAFKA_DIAL_TIMEOUT_SEC", 30),
 		KafkaWorkers:         envInt("KAFKA_WORKERS", 8),
 

@@ -176,10 +176,22 @@ PART 1 — Start Infrastructure
 
   Phase 6 — Verify full audit trail on blockchain
 
-  # Full immutable audit trail for this customer
-  curl -s "http://localhost:9005/internal/v1/audit/trail?entity_id=$CUSTOMER_ID&entity_type=CUSTOMER" \
+  # Audit records are indexed on-chain by (entity_type, entity_id), NOT by
+  # customer. Query each entity directly:
+
+  # Transaction processing receipt (entity_type=TRANSACTION, entity_id=tx_hash)
+  curl -s "http://localhost:9005/internal/v1/audit/trail?entity_id=$TX_HASH&entity_type=TRANSACTION" \
     | python3 -m json.tool
-  # Should show: TRANSACTION_PROCESSED + SAR_FILED records
+  # Should show: TRANSACTION_PROCESSED record (one per ML-scored transaction)
+
+  # SAR filing + investigator actions (entity_type=CASE, entity_id=case_id)
+  curl -s "http://localhost:9005/internal/v1/audit/trail?entity_id=$CASE_ID&entity_type=CASE" \
+    | python3 -m json.tool
+  # Should show: CASE_CREATED, SAR_GENERATED, SAR_FILED records
+
+  # NOTE: there is no customer-level audit-trail query — the customerID is stored
+  # inside each TRANSACTION record's data, but is not a composite-key index.
+  # Use the compliance report (Phase 7) for a customer/date aggregate view.
 
   Phase 7 — Compliance report
 
@@ -237,3 +249,19 @@ PART 1 — Start Infrastructure
   cd "/home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection"
   pip install -e .
   python services/ml-service/main.py
+
+
+
+
+For Option A (make run), just run:
+make infra-up        # starts databases/kafka/vault in Docker
+make fabric-up       # starts Fabric network
+make chaincode-deploy
+make build           # compile Go binaries
+make migrate
+make run             # starts ALL 10 services including ML — nothing else needed
+
+That's it. make run handles everything including the ML service.
+
+
+tail -f logs/transaction-service.log logs/alert-service.log logs/case-service.log

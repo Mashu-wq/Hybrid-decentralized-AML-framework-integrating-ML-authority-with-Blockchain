@@ -183,7 +183,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id string) (*domain.User, error)
 		SELECT u.id, u.email, u.password_hash, ro.name,
 		       u.mfa_enabled, u.mfa_secret, u.mfa_backup_codes,
 		       u.active, u.failed_attempts, u.locked_until,
-		       u.last_login_at, u.last_login_ip, u.created_at, u.updated_at
+		       u.last_login_at, u.last_login_ip::text, u.created_at, u.updated_at
 		FROM iam.users u
 		JOIN iam.roles ro ON ro.id = u.role_id
 		WHERE u.id = $1
@@ -197,7 +197,7 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 		SELECT u.id, u.email, u.password_hash, ro.name,
 		       u.mfa_enabled, u.mfa_secret, u.mfa_backup_codes,
 		       u.active, u.failed_attempts, u.locked_until,
-		       u.last_login_at, u.last_login_ip, u.created_at, u.updated_at
+		       u.last_login_at, u.last_login_ip::text, u.created_at, u.updated_at
 		FROM iam.users u
 		JOIN iam.roles ro ON ro.id = u.role_id
 		WHERE u.email = $1
@@ -236,7 +236,7 @@ func (r *UserRepo) List(ctx context.Context, roleFilter string, activeOnly bool,
 		SELECT u.id, u.email, u.password_hash, ro.name,
 		       u.mfa_enabled, u.mfa_secret, u.mfa_backup_codes,
 		       u.active, u.failed_attempts, u.locked_until,
-		       u.last_login_at, u.last_login_ip, u.created_at, u.updated_at
+		       u.last_login_at, u.last_login_ip::text, u.created_at, u.updated_at
 		FROM iam.users u
 		JOIN iam.roles ro ON ro.id = u.role_id
 		%s ORDER BY u.created_at DESC
@@ -381,7 +381,7 @@ func (r *UserRepo) scanUser(row pgxRowScanner) (*domain.User, error) {
 	var u domain.User
 	var roleName string
 	var mfaSecret *string
-	var backupCodesJSON *[]byte
+	var backupCodesJSON []byte
 	var lastLoginIP *string
 
 	err := row.Scan(
@@ -404,8 +404,8 @@ func (r *UserRepo) scanUser(row pgxRowScanner) (*domain.User, error) {
 	if lastLoginIP != nil {
 		u.LastLoginIP = *lastLoginIP
 	}
-	if backupCodesJSON != nil {
-		if err := json.Unmarshal(*backupCodesJSON, &u.MFABackupCodes); err != nil {
+	if len(backupCodesJSON) > 0 {
+		if err := json.Unmarshal(backupCodesJSON, &u.MFABackupCodes); err != nil {
 			return nil, fmt.Errorf("unmarshal backup codes: %w", err)
 		}
 	}

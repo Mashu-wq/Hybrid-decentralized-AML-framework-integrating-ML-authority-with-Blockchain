@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -205,7 +206,10 @@ func (c *remoteBlockchainClient) post(ctx context.Context, path string, payload 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("blockchain service returned status %d", resp.StatusCode)
+		// Include the response body so callers can distinguish error causes
+		// (e.g. a "record not found" race that should be retried).
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("blockchain service returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

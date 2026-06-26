@@ -1021,3 +1021,187 @@ KNOWN LIMITATIONS FOR TESTING
   5. Prometheus — http://localhost:9090
 
   Raw metrics with query interface.
+
+
+
+
+
+
+
+
+
+
+
+
+   Step-by-Step: Train on Google Colab
+
+  Step 1 — Upload CSV to Google Drive first
+
+  The file is ~493MB. Uploading directly to Colab is slow and gets lost when session ends. Use Google Drive instead:
+
+  1. Go to drive.google.com
+  2. Create a folder called AML_thesis
+  3. Upload /home/mayesha-marzia-zaman/Downloads/PS_20174392719_1491204439457_log.csv into that folder
+
+  ---
+  Step 2 — Open Google Colab
+
+  Go to colab.research.google.com → New Notebook
+
+  ---
+  Step 3 — Paste this complete notebook (cell by cell)
+
+  Cell 1 — Mount Drive & install libraries
+  from google.colab import drive
+  drive.mount('/content/drive')
+  
+  !pip install -q imbalanced-learn lightgbm xgboost
+
+  Cell 2 — Load & explore data
+  import pandas as pd
+  import numpy as np
+  import warnings 
+  warnings.filterwarnings('ignore')
+
+  CSV_PATH = "/content/drive/MyDrive/AML_thesis/PS_20174392719_1491204439457_log.csv"
+  
+  df = pd.read_csv(CSV_PATH)
+  print(f"Shape: {df.shape}")
+  print(f"\nTransaction types:\n{df['type'].value_counts()}")
+  print(f"\nFraud by type:\n{df.groupby('type')['isFraud'].sum()}")
+  print(f"\nOverall fraud rate: {df['isFraud'].mean():.4f}")
+
+  Cell 3 — Feature engineering
+
+  # Keep only fraud-relevant transaction types
+  df = df[df["type"].isin(["TRANSFER", "CASH_OUT"])].copy()
+  print(f"After filter: {len(df):,} rows")
+  print(f"Fraud count: {df['isFraud'].sum():,}")
+
+  # Engineer features
+  df["type_is_transfer"]    = (df["type"] == "TRANSFER").astype(int)
+  df["type_is_cashout"]     = (df["type"] == "CASH_OUT").astype(int)
+  df["hour_of_day"]         = df["step"] % 24
+
+  # Balance anomaly — KEY features for fraud detection
+  df["error_balance_orig"]  = df["oldbalanceOrg"] - df["amount"] - df["newbalanceOrig"]
+  df["error_balance_dest"]  = df["oldbalanceDest"] + df["amount"] - df["newbalanceDest"]
+  df["orig_balance_ratio"]  = df["amount"] / (df["oldbalanceOrg"] + 1)
+  df["dest_balance_ratio"]  = df["amount"] / (df["oldbalanceDest"] + 1)
+  df["is_zero_orig_after"]  = (df["newbalanceOrig"] == 0).astype(int)
+
+  FEATURES = [
+      "amount",
+      "oldbalanceOrg", "newbalanceOrig",
+      "oldbalanceDest", "newbalanceDest",
+      "type_is_transfer", "type_is_cashout",
+      "hour_of_day",
+      "error_balance_orig",  "error_balance_dest",
+      "orig_balance_ratio",  "dest_balance_ratio",
+      "is_zero_orig_after",  "is_zero_dest_before",
+  ]   
+
+  X = df[FEATURES].values
+  y = df["isFraud"].values
+  print(f"\nFeature matrix: {X.shape}")
+  print(f"Features: {FEATURES}")
+
+  Cell 4 — Train/test split + SMOTE
+  from imblearn.over_sampling import SMOTE
+
+  # Temporal split (80/20) — no random shuffle to avoid data leakage
+  split = int(len(X) * 0.8)
+  X_train, X_test = X[:split], X[split:]
+  y_train, y_test = y[:split], y[split:]
+  
+  print(f"Train: {len(X_train):,}  |  Test: {len(X_test):,}")
+  print(f"Train fraud rate: {y_train.mean():.4f}")
+
+  # SMOTE for class imbalance
+  print("\nApplying SMOTE (takes 2-3 minutes)...")
+  sm = SMOTE(random_state=42, n_jobs=-1)
+  X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+  print(f"After SMOTE: {len(X_train_res):,} samples") 
+  print(f"Fraud balance: {y_train_res.mean():.2f}")
+
+  Cell 5 — Train all 3 models
+
+  import time
+  from lightgbm import LGBMClassifier
+  from xgboost import XGBClassifier
+  from sklearn.ensemble import RandomForestClassifier
+  from sklearn.metrics import (precision_score, recall_score, f1_score,
+                               roc_auc_score, average_precision_score)
+
+  def evaluate(name, model, X_test, y_test):
+      proba = model.predict_proba(X_test)[:, 1]
+      pred  = (proba >= 0.5).astype(int)
+      print(f"\n{'='*50}")
+      print(f"  {name}")
+      print(f"{'='*50}")
+      print(f"  Precision : {precision_score(y_test, pred)*100:.2f}%")
+      print(f"  Recall    : {recall_score(y_test, pred)*100:.2f}%")
+      print(f"  F1        : {f1_score(y_test, pred)*100:.2f}%")
+      print(f"  ROC-AUC   : {roc_auc_score(y_test, proba)*100:.2f}%")
+      print(f"  PR-AUC    : {average_precision_score(y_test, proba)*100:.2f}%")
+      return proba
+
+  # LightGBM
+  print("Training LightGBM...")
+  t0 = time.time()
+  lgbm = LGBMClassifier(n_estimators=1000, num_leaves=1000,
+                         learning_rate=0.05, is_unbalance=False,
+                         random_state=42, n_jobs=-1, verbose=-1)
+  lgbm.fit(X_train_res, y_train_res)
+  print(f"Done in {time.time()-t0:.0f}s")
+  lgbm_proba = evaluate("LightGBM (PaySim)", lgbm, X_test, y_test)
+
+  # Random Forest
+  print("\nTraining Random Forest...")
+  rf = RandomForestClassifier(n_estimators=500, max_depth=12,
+                               class_weight="balanced",
+                               random_state=42, n_jobs=-1)
+  rf.fit(X_train_res, y_train_res)
+  print(f"Done in {time.time()-t0:.0f}s")
+  rf_proba = evaluate("Random Forest (PaySim)", rf, X_test, y_test)
+  
+  # XGBoost
+  print("\nTraining XGBoost...")
+  t0 = time.time()
+  xgb = XGBClassifier(n_estimators=500, learning_rate=0.05,
+                       max_depth=6, random_state=42,
+                       n_jobs=-1, eval_metric="logloss",
+                       verbosity=0)
+  xgb.fit(X_train_res, y_train_res)
+  print(f"Done in {time.time()-t0:.0f}s")
+  xgb_proba = evaluate("XGBoost (PaySim)", xgb, X_test, y_test)
+
+  Cell 6 — Save artifacts & download
+
+  import joblib, os, json
+
+  SAVE_DIR = "/content/drive/MyDrive/AML_thesis/paysim_models"
+  os.makedirs(SAVE_DIR, exist_ok=True)
+  
+  joblib.dump(lgbm,     f"{SAVE_DIR}/paysim_lightgbm.pkl")
+  joblib.dump(rf,       f"{SAVE_DIR}/paysim_random_forest.pkl")
+  joblib.dump(xgb,      f"{SAVE_DIR}/paysim_xgboost.pkl")
+  joblib.dump(FEATURES, f"{SAVE_DIR}/paysim_features.pkl")
+  
+  print("All models saved to Google Drive!")
+  print(f"Location: {SAVE_DIR}")
+
+  # Also download directly to your computer
+  from google.colab import files
+  for name in ["paysim_lightgbm.pkl", "paysim_random_forest.pkl",
+               "paysim_xgboost.pkl", "paysim_features.pkl"]:
+      files.download(f"{SAVE_DIR}/{name}")
+
+  ---
+  Step 4 — After training, move files to your project
+
+  After the 4 .pkl files download to your computer:
+
+  # Move them to the ML artifacts directory
+  mv ~/Downloads/paysim_*.pkl \
+     "/home/mayesha-marzia-zaman/AML_fraud_detection (2)/AML_fraud_detection/ml/artifacts/"

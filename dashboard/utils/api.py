@@ -178,16 +178,50 @@ def update_alert_status(alert_id, status, changed_by="dashboard", notes=""):
 
 # ── Cases ────────────────────────────────────────────────────────────────────
 
+# The case-service serialises case objects in PascalCase (CaseID, Title, …)
+# whereas the rest of the dashboard (and the alert-service) use snake_case.
+# Normalise here so pages can use a single, consistent snake_case convention.
+_CASE_FIELD_MAP = {
+    "CaseID": "case_id", "AlertID": "alert_id", "CustomerID": "customer_id",
+    "TxHash": "tx_hash", "Title": "title", "Description": "description",
+    "Status": "status", "Priority": "priority", "AssigneeID": "assignee_id",
+    "AssignedAt": "assigned_at", "FraudProbability": "fraud_probability",
+    "RiskScore": "risk_score", "SARRequired": "sar_required",
+    "SARS3Key": "sar_s3_key", "SARGeneratedAt": "sar_generated_at",
+    "BlockchainTxID": "blockchain_tx_id", "ResolutionSummary": "resolution_summary",
+    "ClosedAt": "closed_at", "CreatedAt": "created_at", "UpdatedAt": "updated_at",
+}
+
+def _normalize_case(c):
+    """Return a case dict with snake_case keys (originals preserved too)."""
+    if not isinstance(c, dict):
+        return c
+    out = dict(c)
+    for k, v in c.items():
+        out[_CASE_FIELD_MAP.get(k, k)] = v
+    return out
+
 def get_cases(status=None, customer_id=None, limit=50):
     params = {"limit": limit}
     if status:
         params["status"] = status
     if customer_id:
         params["customer_id"] = customer_id
-    return _get(f"{CASE_URL}/cases", params)
+    data, err = _get(f"{CASE_URL}/cases", params)
+    if isinstance(data, dict) and isinstance(data.get("cases"), list):
+        data["cases"] = [_normalize_case(c) for c in data["cases"]]
+    return data, err
 
 def get_case(case_id):
-    return _get(f"{CASE_URL}/cases/{case_id}")
+    data, err = _get(f"{CASE_URL}/cases/{case_id}")
+    if isinstance(data, dict):
+        # detail is wrapped as {"case": {...}, "actions": [...]}
+        case = data.get("case", data)
+        norm = _normalize_case(case)
+        if "actions" in data:
+            norm["actions"] = data["actions"]
+        return norm, err
+    return data, err
 
 def create_case(body):
     return _post(f"{CASE_URL}/cases", body)
@@ -204,6 +238,10 @@ def get_case_stats(period="7d"):
     return _get(f"{CASE_URL}/cases/stats", {"period": period})
 
 # ── Transactions ─────────────────────────────────────────────────────────────
+# NOTE: the transaction-service exposes ONLY /health over HTTP (port 9002);
+# transaction reads (GetTransaction, GetRiskScore, GetVelocityStats, history)
+# are served over gRPC on :50062, not REST. The helpers below will 404 until a
+# REST gateway is added — they are currently unused by any dashboard page.
 
 def get_transaction(tx_hash):
     return _get(f"{TX_URL}/transactions/{tx_hash}")
@@ -229,12 +267,21 @@ def get_alerts_on_chain(customer_id):
     return _get(f"{BLOCKCHAIN_URL}/internal/v1/alerts/customer/{customer_id}")
 
 def get_audit_trail(entity_id, entity_type):
-    return _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/trail",
-                {"entity_id": entity_id, "entity_type": entity_type})
+    # Blockchain service wraps results as {"transaction_id": ..., "payload": [...]}.
+    # Return the payload (the list of audit records) directly.
+    data, err = _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/trail",
+                     {"entity_id": entity_id, "entity_type": entity_type})
+    if isinstance(data, dict) and "payload" in data:
+        return data["payload"], err
+    return data, err
 
 def get_compliance_report(start_date, end_date):
-    return _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/compliance",
-                {"start_date": start_date, "end_date": end_date})
+    # Wrapped as {"transaction_id": ..., "payload": {...}} — return the payload dict.
+    data, err = _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/compliance",
+                     {"start_date": start_date, "end_date": end_date})
+    if isinstance(data, dict) and "payload" in data:
+        return data["payload"], err
+    return data, err
 
 def get_alert_stats_on_chain():
     return _get(f"{BLOCKCHAIN_URL}/internal/v1/alerts/stats")

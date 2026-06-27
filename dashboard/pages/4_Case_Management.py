@@ -165,7 +165,7 @@ with tab_detail:
                         st.warning("SAR already exists.")
                     else:
                         res,e = api.generate_sar(case["case_id"],gen_by,sar_notes)
-                        st.success(f"SAR key: {res.get('sar_s3_key','—')}") if res else st.error(f"Failed: {e}")
+                        st.success(f"SAR key: {res.get('s3_key', res.get('sar_s3_key','—'))}") if res else st.error(f"Failed: {e}")
     else:
         st.info("Enter a Case ID and click Load Case.")
 

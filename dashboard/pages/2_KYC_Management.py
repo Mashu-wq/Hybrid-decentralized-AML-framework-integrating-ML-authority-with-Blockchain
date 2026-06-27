@@ -197,9 +197,14 @@ with tab_detail:
         else:
             alert_list = []
         if alert_list:
-            st.dataframe(pd.DataFrame(alert_list)[[
-                "alert_id","fraud_probability","risk_level","status","created_at"
-            ]], use_container_width=True)
+            df_al = pd.DataFrame(alert_list)
+            # Alerts carry an integer `priority`, not a `risk_level` string — derive it.
+            _PRIO = {4: "CRITICAL", 3: "HIGH", 2: "MEDIUM", 1: "LOW", 0: "UNSPECIFIED"}
+            if "priority" in df_al.columns and "risk_level" not in df_al.columns:
+                df_al["risk_level"] = df_al["priority"].map(_PRIO)
+            cols = [c for c in ["alert_id", "fraud_probability", "risk_level",
+                                "status", "created_at"] if c in df_al.columns]
+            st.dataframe(df_al[cols], use_container_width=True)
         else:
             st.info("No alerts found for this customer.")
 

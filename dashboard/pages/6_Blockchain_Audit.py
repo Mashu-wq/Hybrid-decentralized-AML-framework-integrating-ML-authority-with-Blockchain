@@ -91,17 +91,18 @@ with tab_trail:
         else:
             st.success(f"Found **{len(events)}** on-chain events for `{entity_id.strip()}`")
 
-            # Timeline chart
+            # Timeline chart — audit records use: recordType, createdAt, actorID,
+            # entityType, entityID, txId, hash (Fabric audit-channel record shape).
             df_ev = pd.DataFrame(events)
-            if "timestamp" in df_ev.columns and "event_type" in df_ev.columns:
-                df_ev["ts"] = pd.to_datetime(df_ev["timestamp"])
+            if "createdAt" in df_ev.columns and "recordType" in df_ev.columns:
+                df_ev["ts"] = pd.to_datetime(df_ev["createdAt"])
                 df_ev["y"]  = 1
 
                 fig_tl = px.scatter(
                     df_ev, x="ts", y="y",
-                    color="event_type",
+                    color="recordType",
                     color_discrete_map=EVENT_COLORS,
-                    hover_data=["event_type","block_number","channel","actor"] if "block_number" in df_ev.columns else ["event_type"],
+                    hover_data=[c for c in ["recordType","entityType","actorID"] if c in df_ev.columns],
                     labels={"ts": "Timestamp", "y": ""},
                     title="Event Timeline",
                 )
@@ -117,7 +118,7 @@ with tab_trail:
 
             # Event cards
             for ev in events:
-                ev_type = ev.get("event_type", "—")
+                ev_type = ev.get("recordType", "—")
                 color   = EVENT_COLORS.get(ev_type, "#6b7280")
                 st.markdown(
                     f"<div style='background:#1a1d27;border-left:4px solid {color};"
@@ -125,14 +126,14 @@ with tab_trail:
                     f"<div style='display:flex;justify-content:space-between'>"
                     f"<span style='color:{color};font-weight:700;font-size:0.9rem'>{ev_type}</span>"
                     f"<span style='color:#9ca3af;font-size:0.8rem'>"
-                    f"{ev.get('timestamp','—')}</span></div>"
+                    f"{ev.get('createdAt','—')}</span></div>"
                     f"<div style='color:#d1d5db;font-size:0.82rem;margin-top:6px'>"
-                    f"Block: <b>{ev.get('block_number','—')}</b> · "
-                    f"Channel: <b>{ev.get('channel','—')}</b> · "
-                    f"Actor: <b>{ev.get('actor','—')}</b></div>"
+                    f"Entity: <b>{ev.get('entityType','—')}</b> · "
+                    f"ID: <b>{ev.get('entityID','—')}</b> · "
+                    f"Actor: <b>{ev.get('actorID','—')}</b></div>"
                     f"<div style='color:#6b7280;font-size:0.75rem;margin-top:4px'>"
-                    f"TX: {ev.get('tx_id',ev.get('fabric_tx_id','—'))} · "
-                    f"Hash: {ev.get('payload_hash','—')}</div>"
+                    f"Fabric TX: {ev.get('txId','—')} · "
+                    f"Hash: {ev.get('hash','—')}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -162,52 +163,51 @@ with tab_compliance:
 
         st.success("Compliance report generated ✓")
 
-        # KPIs
+        # KPIs — audit-channel compliance payload:
+        # totalEvents, transactionsProcessed, sarsFiled, investigatorActions,
+        # modelPredictions, byEntityType, sampleRecords.
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Total Transactions", f"{report.get('total_transactions',0):,}")
-        k2.metric("Flagged",            f"{report.get('flagged_transactions',0):,}")
-        k3.metric("Flag Rate",          f"{report.get('flagged_rate',0)*100:.2f}%")
-        k4.metric("SARs Filed",         report.get("sars_filed",0))
-        k5.metric("Blockchain Receipts",f"{report.get('blockchain_receipts',0):,}")
+        k1.metric("Total Events",          f"{report.get('totalEvents',0):,}")
+        k2.metric("Transactions Processed",f"{report.get('transactionsProcessed',0):,}")
+        k3.metric("SARs Filed",            report.get("sarsFiled",0))
+        k4.metric("Investigator Actions",  report.get("investigatorActions",0))
+        k5.metric("Model Predictions",     report.get("modelPredictions",0))
 
-        k6, k7, k8 = st.columns(3)
-        k6.metric("Confirmed Fraud",    report.get("confirmed_fraud",0))
-        k7.metric("False Positives",    report.get("false_positives",0))
-        k8.metric("Consensus Rate",
-                  f"{report.get('majority_consensus_rate',0)*100:.3f}%")
+        st.caption(
+            f"Window: {report.get('startDate','—')} → {report.get('endDate','—')} · "
+            "Pulled from the audit-channel ledger (regulator-verifiable)."
+        )
 
-        # Channel breakdown
+        # Entity-type breakdown
         st.markdown("---")
-        st.markdown("#### Channel Breakdown")
-        channels = report.get("channels", {})
-        ch_df = pd.DataFrame([
-            {"Channel": ch, **vals} for ch, vals in channels.items()
-        ])
-        if not ch_df.empty:
-            st.dataframe(ch_df, use_container_width=True, hide_index=True)
+        st.markdown("#### Records by Entity Type")
+        by_entity = report.get("byEntityType", {}) or {}
+        if by_entity:
+            ent_df = pd.DataFrame(
+                [{"Entity Type": k, "Count": v} for k, v in by_entity.items()]
+            )
+            st.dataframe(ent_df, use_container_width=True, hide_index=True)
 
-        # Detection funnel chart
+        # Audit funnel chart (from on-chain receipts)
         st.markdown("---")
-        st.markdown("#### Detection Funnel")
+        st.markdown("#### Audit Funnel")
         funnel_vals = [
-            report.get("total_transactions", 0),
-            report.get("flagged_transactions", 0),
-            report.get("confirmed_fraud", 0) + report.get("false_positives", 0),
-            report.get("confirmed_fraud", 0),
-            report.get("sars_filed", 0),
+            report.get("totalEvents", 0),
+            report.get("transactionsProcessed", 0),
+            report.get("investigatorActions", 0),
+            report.get("sarsFiled", 0),
         ]
         funnel_labels = [
-            "Total Transactions",
-            "ML Flagged",
-            "Investigated",
-            "Confirmed Fraud",
-            "SAR Filed",
+            "Total Audit Events",
+            "Transactions Processed",
+            "Investigator Actions",
+            "SARs Filed",
         ]
         fig_f = go.Figure(go.Funnel(
             y=funnel_labels,
             x=funnel_vals,
             textinfo="value+percent initial",
-            marker_color=["#3b82f6","#f97316","#eab308","#ef4444","#a855f7"],
+            marker_color=["#3b82f6","#f97316","#eab308","#a855f7"],
         ))
         fig_f.update_layout(
             template="plotly_dark",

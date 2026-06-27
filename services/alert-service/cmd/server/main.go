@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fraud-detection/alert-service/internal/clients"
 	"github.com/fraud-detection/alert-service/internal/config"
 	"github.com/fraud-detection/alert-service/internal/escalation"
 	grpcserver "github.com/fraud-detection/alert-service/internal/grpc"
@@ -149,9 +150,24 @@ func run() error {
 	log.Info().Msg("WebSocket hub started")
 
 	// -------------------------------------------------------------------------
-	// 8. Alert service
+	// 8. Blockchain client (alert-channel anchoring)
 	// -------------------------------------------------------------------------
-	alertSvc := service.New(alertStore, dedupStore, dispatcher, hub)
+	blockchainClient := clients.NewBlockchainClient(cfg.BlockchainServiceURL)
+	{
+		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := blockchainClient.Ping(pingCtx); err != nil {
+			log.Warn().Err(err).Str("url", cfg.BlockchainServiceURL).
+				Msg("blockchain service unreachable at startup — alerts will not be anchored until it recovers")
+		} else {
+			log.Info().Str("url", cfg.BlockchainServiceURL).Msg("blockchain service reachable")
+		}
+		pingCancel()
+	}
+
+	// -------------------------------------------------------------------------
+	// 9. Alert service
+	// -------------------------------------------------------------------------
+	alertSvc := service.New(alertStore, dedupStore, dispatcher, hub, blockchainClient)
 
 	// -------------------------------------------------------------------------
 	// 9. Escalation scheduler

@@ -69,6 +69,9 @@ type Config struct {
 	EscalationThreshold time.Duration // escalate if CRITICAL+OPEN for > this (default 15m)
 	SeniorAnalysts      []string      // user IDs of senior analysts for round-robin assignment
 
+	// --- Blockchain ---
+	BlockchainServiceURL string // Blockchain Service base URL for alert-channel anchoring
+
 	// --- Observability ---
 	JaegerEndpoint string
 	JWTSecret      string // shared HMAC secret for inter-service JWT validation
@@ -127,6 +130,8 @@ func Load() (*Config, error) {
 		EscalationInterval:  envDuration("ESCALATION_CHECK_INTERVAL", time.Minute),
 		EscalationThreshold: envDuration("ESCALATION_THRESHOLD", 15*time.Minute),
 		SeniorAnalysts:      envStringSlice("SENIOR_ANALYSTS", nil),
+
+		BlockchainServiceURL: env("BLOCKCHAIN_SERVICE_ADDR", "http://localhost:9005"),
 
 		JaegerEndpoint: env("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"),
 		JWTSecret:      envRequired("INTERNAL_JWT_SECRET"),

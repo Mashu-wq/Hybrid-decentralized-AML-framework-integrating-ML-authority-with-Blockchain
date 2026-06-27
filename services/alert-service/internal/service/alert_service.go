@@ -27,7 +27,14 @@ type AlertStore interface {
 	GetEscalationCandidates(ctx context.Context, threshold time.Duration) ([]*domain.Alert, error)
 	GetStats(ctx context.Context, period string) (*domain.AlertStats, error)
 	LogNotification(ctx context.Context, alertID, channel, recipient string, success bool, msgID, errMsg string) error
+	SetBlockchainTxID(ctx context.Context, alertID, txID string) error
 	Ping(ctx context.Context) error
+}
+
+// AlertAnchorer anchors fraud alerts on the Hyperledger Fabric alert-channel
+// via the Blockchain Service. Implemented by clients.BlockchainClient.
+type AlertAnchorer interface {
+	CreateAlert(ctx context.Context, alertID, customerID, txHash, modelVersion string, fraudProb, riskScore float64) (string, error)
 }
 
 // DedupStore checks and marks processed alert dedup hashes in Redis.
@@ -52,20 +59,24 @@ type AlertService struct {
 	dedup      DedupStore
 	dispatcher *notification.Dispatcher
 	hub        Broadcaster
+	anchor     AlertAnchorer
 }
 
 // New creates an AlertService with all required dependencies.
+// anchor may be nil (alert-channel anchoring is then skipped).
 func New(
 	store AlertStore,
 	dedup DedupStore,
 	dispatcher *notification.Dispatcher,
 	hub Broadcaster,
+	anchor AlertAnchorer,
 ) *AlertService {
 	return &AlertService{
 		store:      store,
 		dedup:      dedup,
 		dispatcher: dispatcher,
 		hub:        hub,
+		anchor:     anchor,
 	}
 }
 
@@ -133,6 +144,32 @@ func (s *AlertService) IngestAlert(ctx context.Context, event *domain.AlertInges
 		Str("priority", priority.String()).
 		Float64("fraud_prob", event.FraudProbability).
 		Msg("alert created")
+
+	// --- blockchain anchor (fire-and-forget, non-fatal) ---
+	// Anchors the alert on the Fabric alert-channel and back-fills the
+	// resulting Fabric tx id onto the persisted alert. Never blocks ingest.
+	if s.anchor != nil {
+		a := alert // capture for goroutine
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			txID, anchorErr := s.anchor.CreateAlert(
+				bgCtx, a.AlertID, a.CustomerID, a.TxHash, a.ModelVersion,
+				a.FraudProbability, a.RiskScore,
+			)
+			if anchorErr != nil {
+				log.Warn().Err(anchorErr).Str("alert_id", a.AlertID).
+					Msg("alert-channel anchoring failed — alert persisted but not on-chain")
+				return
+			}
+			if txID != "" {
+				if upErr := s.store.SetBlockchainTxID(bgCtx, a.AlertID, txID); upErr != nil {
+					log.Warn().Err(upErr).Str("alert_id", a.AlertID).
+						Msg("failed to persist blockchain_tx_id after anchoring")
+				}
+			}
+		}()
+	}
 
 	// --- notifications (non-fatal) ---
 	if s.dispatcher != nil {

@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +19,16 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockStore struct {
-	created      []*domain.Alert
-	alerts       map[string]*domain.Alert
-	createErr    error
-	getErr       error
-	updateErr    error
-	statsResult  *domain.AlertStats
-	candidates   []*domain.Alert
-	pingErr      error
+	created        []*domain.Alert
+	alerts         map[string]*domain.Alert
+	createErr      error
+	getErr         error
+	updateErr      error
+	statsResult    *domain.AlertStats
+	candidates     []*domain.Alert
+	pingErr        error
+	mu             sync.Mutex
+	blockchainTxID map[string]string
 }
 
 func newMockStore() *mockStore {
@@ -107,7 +110,49 @@ func (m *mockStore) LogNotification(_ context.Context, _, _, _ string, _ bool, _
 	return nil
 }
 
+func (m *mockStore) SetBlockchainTxID(_ context.Context, alertID, txID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.blockchainTxID == nil {
+		m.blockchainTxID = make(map[string]string)
+	}
+	m.blockchainTxID[alertID] = txID
+	return nil
+}
+
+func (m *mockStore) getBlockchainTxID(alertID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.blockchainTxID[alertID]
+}
+
 func (m *mockStore) Ping(_ context.Context) error { return m.pingErr }
+
+// ----
+
+// mockAnchor records alert-channel anchoring calls.
+type mockAnchor struct {
+	mu       sync.Mutex
+	calls    []string // alertIDs anchored
+	returnTx string
+	err      error
+}
+
+func (m *mockAnchor) CreateAlert(_ context.Context, alertID, _, _, _ string, _, _ float64) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, alertID)
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.returnTx, nil
+}
+
+func (m *mockAnchor) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
 
 // ----
 
@@ -156,7 +201,12 @@ func validEvent(prob float64) *domain.AlertIngestEvent {
 
 func newSvc(store *mockStore, dedup *mockDedup, hub *mockBroadcaster) *service.AlertService {
 	dispatcher := notification.NewDispatcher(nil, nil, nil, nil, store)
-	return service.New(store, dedup, dispatcher, hub)
+	return service.New(store, dedup, dispatcher, hub, nil)
+}
+
+func newSvcWithAnchor(store *mockStore, dedup *mockDedup, hub *mockBroadcaster, anchor service.AlertAnchorer) *service.AlertService {
+	dispatcher := notification.NewDispatcher(nil, nil, nil, nil, store)
+	return service.New(store, dedup, dispatcher, hub, anchor)
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +226,40 @@ func TestIngestAlert_HappyPath_Low(t *testing.T) {
 	assert.Equal(t, domain.StatusOpen, store.created[0].Status)
 	assert.Len(t, hub.messages, 1)
 	assert.Equal(t, domain.WSAlertCreated, hub.messages[0].Type)
+}
+
+func TestIngestAlert_AnchorsOnChain(t *testing.T) {
+	store := newMockStore()
+	dedup := &mockDedup{}
+	hub := &mockBroadcaster{}
+	anchor := &mockAnchor{returnTx: "fabric-tx-abc123"}
+	svc := newSvcWithAnchor(store, dedup, hub, anchor)
+
+	err := svc.IngestAlert(context.Background(), validEvent(0.9))
+	require.NoError(t, err)
+	assert.Len(t, store.created, 1)
+
+	// Anchoring is fire-and-forget in a goroutine — poll briefly.
+	require.Eventually(t, func() bool {
+		return anchor.callCount() == 1 && store.getBlockchainTxID("alert-001") == "fabric-tx-abc123"
+	}, 2*time.Second, 10*time.Millisecond, "alert should be anchored and tx id persisted")
+}
+
+func TestIngestAlert_AnchorFailure_NonFatal(t *testing.T) {
+	store := newMockStore()
+	dedup := &mockDedup{}
+	hub := &mockBroadcaster{}
+	anchor := &mockAnchor{err: errors.New("blockchain down")}
+	svc := newSvcWithAnchor(store, dedup, hub, anchor)
+
+	// Ingest must succeed even when anchoring fails.
+	err := svc.IngestAlert(context.Background(), validEvent(0.9))
+	require.NoError(t, err)
+	assert.Len(t, store.created, 1)
+	require.Eventually(t, func() bool {
+		return anchor.callCount() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Empty(t, store.getBlockchainTxID("alert-001"), "no tx id persisted on anchor failure")
 }
 
 func TestIngestAlert_CriticalPriority(t *testing.T) {

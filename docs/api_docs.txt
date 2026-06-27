@@ -666,15 +666,22 @@ curl -s -X POST \
 
 --------------------------------------------------------------------------------
 
--- 5.6  Update case status to UNDER_INVESTIGATION --
+-- 5.6  Update case status to IN_REVIEW --
 METHOD: PATCH
 URL:    http://localhost:9004/cases/{case_id}/status
+
+>>> CASE STATUS LIFECYCLE (enforced by case-service domain):
+      OPEN -> IN_REVIEW -> PENDING_SAR -> CLOSED
+      OPEN/IN_REVIEW/PENDING_SAR -> ESCALATED ; ESCALATED -> IN_REVIEW/CLOSED
+      CLOSED -> OPEN (re-open allowed)
+    Any other transition (e.g. OPEN -> CLOSED is allowed, but OPEN -> PENDING_SAR
+    is NOT) returns: {"error":"INVALID_TRANSITION: status transition not permitted"}.
 
 curl -s -X PATCH \
   http://localhost:9004/cases/$CASE_ID/status \
   -H "Content-Type: application/json" \
   -d '{
-    "status":     "UNDER_INVESTIGATION",
+    "status":     "IN_REVIEW",
     "updated_by": "investigator-001",
     "notes":      "Initial review complete. Transaction pattern consistent with layering stage of money laundering. Proceeding with full investigation."
   }' | python3 -m json.tool
@@ -734,17 +741,21 @@ Expected:
 
 --------------------------------------------------------------------------------
 
--- 5.9  Resolve the case --
+-- 5.9  Close the case (IN_REVIEW -> CLOSED) --
 METHOD: PATCH
 URL:    http://localhost:9004/cases/{case_id}/status
+
+>>> NOTE: CLOSED is the terminal state. Reaching it from OPEN requires going
+          through IN_REVIEW first (see 5.6). Generating the SAR (5.8) sets
+          SARGeneratedAt/SARS3Key; closing here records the resolution_summary.
 
 curl -s -X PATCH \
   http://localhost:9004/cases/$CASE_ID/status \
   -H "Content-Type: application/json" \
   -d '{
-    "status":             "RESOLVED",
+    "status":             "CLOSED",
     "updated_by":         "investigator-001",
-    "notes":              "SAR filed with FinCEN. Case resolved.",
+    "notes":              "SAR filed with FinCEN. Case closed.",
     "resolution_summary": "Structuring confirmed. SAR filed. Customer account flagged for enhanced monitoring."
   }' | python3 -m json.tool
 
@@ -949,7 +960,7 @@ COMPLETE E2E CHECKLIST
   [  ]  Phase 5: Evidence added to case
   [  ]  Phase 5: Investigator action recorded on blockchain
   [  ]  Phase 5: SAR generated (sarHash on blockchain)
-  [  ]  Phase 5: Case resolved
+  [  ]  Phase 5: Case closed (IN_REVIEW -> CLOSED)
   [  ]  Phase 6: TRANSACTION_PROCESSED receipt visible on audit trail
   [  ]  Phase 6: SAR_FILED record visible on audit trail
   [  ]  Phase 6: INVESTIGATOR_ACTION record visible on audit trail

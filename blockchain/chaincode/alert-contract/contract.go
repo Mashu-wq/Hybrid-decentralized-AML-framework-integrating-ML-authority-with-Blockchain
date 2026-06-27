@@ -167,7 +167,7 @@ func (c *AlertChaincode) CreateAlert(stub shim.ChaincodeStubInterface, args []st
 		TxHash:       txHash,
 		FraudProb:    fraudProb,
 		RiskScore:    riskScore,
-		RiskLevel:    deriveRiskLevel(fraudProb),
+		RiskLevel:    deriveRiskLevel(riskScore),
 		Status:       alertStatusOpen,
 		ModelVersion: modelVersion,
 		CreatedAt:    now,
@@ -555,13 +555,18 @@ func alertStateKey(alertID string) string {
 	return alertRecordPrefix + alertID
 }
 
-func deriveRiskLevel(fraudProb float64) string {
+// deriveRiskLevel maps the composite risk score (0–100) — a hybrid of the ML
+// fraud probability and the FATF rule-based risk factors computed upstream by
+// the transaction service — to an alert risk level. The raw ML fraud
+// probability alone is too narrow a band on the adapted feature space to
+// separate risk tiers, so the composite riskScore drives the level instead.
+func deriveRiskLevel(riskScore float64) string {
 	switch {
-	case fraudProb > 0.85:
+	case riskScore > 85:
 		return "CRITICAL"
-	case fraudProb >= 0.70:
+	case riskScore >= 70:
 		return "HIGH"
-	case fraudProb >= 0.50:
+	case riskScore >= 50:
 		return "MEDIUM"
 	default:
 		return "LOW"

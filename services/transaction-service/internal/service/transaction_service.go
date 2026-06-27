@@ -186,7 +186,7 @@ func (s *TransactionService) ProcessTransaction(ctx context.Context, raw *domain
 		log.Warn().Err(err).Msg("failed to update velocity Redis; continuing")
 	}
 
-	riskScore := fraudProbToScore(prediction.FraudProbability)
+	riskScore := compositeRiskScore(f, prediction.FraudProbability)
 	cachedScore := &domain.CachedRiskScore{
 		CustomerID:   raw.CustomerID,
 		RiskScore:    riskScore,
@@ -383,7 +383,7 @@ func (s *TransactionService) buildAlertEvent(enriched *domain.EnrichedTransactio
 		CustomerID:           enriched.CustomerID,
 		TxHash:               enriched.TxHash,
 		FraudProbability:     prediction.FraudProbability,
-		RiskScore:            fraudProbToScore(prediction.FraudProbability),
+		RiskScore:            compositeRiskScore(enriched.Features, prediction.FraudProbability),
 		RiskLevel:            prediction.RiskLevel.String(),
 		ModelVersion:         prediction.ModelVersion,
 		SHAPExplanationJSON:  shapJSON,
@@ -413,6 +413,57 @@ func fraudProbToScore(prob float64) float64 {
 		return 100
 	}
 	return prob * 100
+}
+
+// clampScore bounds a 0–100 risk component, guarding against bad inputs.
+func clampScore(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+// compositeRiskScore blends the ML fraud probability with the rule-based risk
+// signals into a single 0–100 score that drives the alert risk level
+// (LOW/MEDIUM/HIGH/CRITICAL) on the Fabric alert-channel.
+//
+// On the adapted bank-wire feature space the ML model produces a narrow
+// probability band (most legitimate single-transaction inferences score low),
+// so it is weighted lightly (10%). The differentiating signal comes from the
+// FATF risk-based factors the feature pipeline already computes: the customer's
+// KYC risk tier, the merchant category risk, and the jurisdiction (geographic)
+// risk — each weighted 30%. Cross-border transfers, statistically anomalous
+// amounts, and high-risk merchant categories add bounded bonuses. This hybrid
+// ML + rule-based score is what production AML systems use and yields a
+// realistic spread of alert risk levels.
+func compositeRiskScore(f *domain.TransactionFeatures, fraudProb float64) float64 {
+	if f == nil {
+		return fraudProbToScore(fraudProb)
+	}
+
+	score := 0.10*fraudProbToScore(fraudProb) +
+		0.30*clampScore(f.CustomerRiskScore) +
+		0.30*clampScore(f.MerchantRiskScore) +
+		0.30*clampScore(f.GeographicRiskScore)
+
+	if f.CrossBorderFlag {
+		score += 12
+	}
+	if f.IsHighRiskMerchant {
+		score += 6
+	}
+	if f.AmountDeviationScore > 0 {
+		if bonus := f.AmountDeviationScore * 4; bonus > 12 {
+			score += 12
+		} else {
+			score += bonus
+		}
+	}
+
+	return clampScore(score)
 }
 
 // TODO: Add compile-time interface assertion for FeatureExtractor once

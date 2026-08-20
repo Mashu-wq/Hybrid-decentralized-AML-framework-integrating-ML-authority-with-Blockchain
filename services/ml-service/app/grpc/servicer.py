@@ -373,7 +373,7 @@ class FraudMLServicer:
                 auc_roc=max(m.auc_roc for m in models),
                 auc_pr=0.0, accuracy=0.0,
                 true_positives=0, false_positives=0, true_negatives=0, false_negatives=0,
-                sample_count=9642, period=request.period or "test",
+                sample_count=9643, period=request.period or "test",
             )
         )
 

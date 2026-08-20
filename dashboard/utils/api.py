@@ -52,7 +52,9 @@ def _get(url, params=None):
     except requests.exceptions.Timeout:
         return None, "Request timed out"
     except Exception as e:
-        return None, str(e)
+        # Surface the server's JSON error body (e.g. "...record ... not found")
+        # rather than the raw "400 Client Error" string, so callers can react.
+        return None, _extract_error(e)
 
 def _extract_error(e):
     """Return the most informative error string from an exception."""
@@ -288,6 +290,29 @@ def get_alert_stats_on_chain():
 
 def get_blockchain_health():
     return _get(f"{BLOCKCHAIN_URL}/health")
+
+def get_audit_sequence_status():
+    # Latest chaincode-assigned receipt sequence per org (gap-free by construction).
+    # Wrapped as {"transaction_id": ..., "payload": [...]} — return the payload list.
+    data, err = _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/sequence")
+    if isinstance(data, dict) and "payload" in data:
+        return data["payload"], err
+    return data, err
+
+def get_audit_completeness(expected_count):
+    # Reconcile on-chain receipt count vs the bank's independently sourced
+    # transaction count. Returns {msp_id, anchored_receipts, expected_count,
+    # missing_receipts, complete}.
+    return _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/completeness",
+                {"expected_count": int(expected_count)})
+
+def get_receipt_details_on_chain(record_id):
+    # Private half of a processing receipt (bank+regulator Private Data
+    # Collection), hash-verified by the chaincode against the public record.
+    data, err = _get(f"{BLOCKCHAIN_URL}/internal/v1/audit/receipt-details/{record_id}")
+    if isinstance(data, dict) and "payload" in data:
+        return data["payload"], err
+    return data, err
 
 # ── ML ───────────────────────────────────────────────────────────────────────
 

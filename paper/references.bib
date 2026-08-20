@@ -1,0 +1,309 @@
+% =============================================================================
+%  references.bib
+%  Blockchain-Based KYC/AML Fraud Detection with Verifiable Audit Completeness
+%
+%  Every entry below was checked against a publisher record, DBLP, or the
+%  paper PDF itself. Entries flagged VERIFY in the comment still need you to
+%  confirm one field before submission.
+%
+%  Suggested usage (IEEEtran):
+%     \bibliographystyle{IEEEtran}
+%     \bibliography{references}
+% =============================================================================
+
+
+% =============================================================================
+%  1. CORE / BASE PAPERS  — cite all five, they carry the paper
+% =============================================================================
+
+% Dataset + ML baseline. Metadata taken from the arXiv PDF directly.
+% Their illicit-class RF results: P 0.956 / R 0.670 / F1 0.788 (all features).
+@inproceedings{weber2019aml,
+  title     = {Anti-Money Laundering in Bitcoin: Experimenting with Graph
+               Convolutional Networks for Financial Forensics},
+  author    = {Weber, Mark and Domeniconi, Giacomo and Chen, Jie and
+               Weidele, Daniel Karl I. and Bellei, Claudio and
+               Robinson, Tom and Leiserson, Charles E.},
+  booktitle = {KDD Workshop on Anomaly Detection in Finance},
+  year      = {2019},
+  note      = {arXiv:1908.02591}
+}
+
+% Platform. Grounds execute-order-validate, endorsement policy, and the
+% MVCC read-write conflicts behind your per-org counter serialization.
+@inproceedings{androulaki2018fabric,
+  title     = {Hyperledger Fabric: A Distributed Operating System for
+               Permissioned Blockchains},
+  author    = {Androulaki, Elli and Barger, Artem and Bortnikov, Vita and
+               Cachin, Christian and Christidis, Konstantinos and
+               De Caro, Angelo and Enyeart, David and Ferris, Christopher and
+               Laventman, Gennady and Manevich, Yacov and others},
+  booktitle = {Proceedings of the Thirteenth EuroSys Conference (EuroSys '18)},
+  pages     = {1--15},
+  year      = {2018},
+  publisher = {ACM},
+  doi       = {10.1145/3190508.3190538}
+}
+
+% THE prior art your novelty claim must beat. Untrusted logger, auditors who
+% challenge it, logarithmic proofs that no events were deleted.
+@inproceedings{crosby2009tamperevident,
+  title     = {Efficient Data Structures for Tamper-Evident Logging},
+  author    = {Crosby, Scott A. and Wallach, Dan S.},
+  booktitle = {Proceedings of the 18th USENIX Security Symposium},
+  pages     = {317--334},
+  year      = {2009},
+  publisher = {USENIX Association}
+}
+
+% Closest recent competitor system: Fabric + federated learning for AML.
+% VERIFY: expand "and others" to the full author list, and confirm Khan's
+% given names, from the publisher page before submitting.
+@article{khan2025baml,
+  title   = {{BAML}: A Decentralized Approach to Secure, Privacy-Preserving
+             Financial Compliance for Enhancing Anti-Money Laundering with
+             Blockchain Hyperledger and Federated Learning},
+  author  = {Khan, A. A. and Alsufyani, A. and Alsufyani, N. and others},
+  journal = {Peer-to-Peer Networking and Applications},
+  volume  = {18},
+  number  = {270},
+  year    = {2025},
+  doi     = {10.1007/s12083-025-02086-6}
+}
+
+% The architecture you actually implement (3-layer GraphSAGE, 85->256->128->64->2).
+@inproceedings{hamilton2017graphsage,
+  title     = {Inductive Representation Learning on Large Graphs},
+  author    = {Hamilton, William L. and Ying, Rex and Leskovec, Jure},
+  booktitle = {Advances in Neural Information Processing Systems 30
+               (NeurIPS 2017)},
+  pages     = {1024--1034},
+  year      = {2017}
+}
+
+
+% =============================================================================
+%  2. SECURE LOGGING & AUDITABILITY  — the literature that decides acceptance
+% =============================================================================
+
+@article{schneier1999secureaudit,
+  title   = {Secure Audit Logs to Support Computer Forensics},
+  author  = {Schneier, Bruce and Kelsey, John},
+  journal = {ACM Transactions on Information and System Security (TISSEC)},
+  volume  = {2},
+  number  = {2},
+  pages   = {159--176},
+  year    = {1999},
+  doi     = {10.1145/317087.317089}
+}
+
+@article{ma2009securelogging,
+  title   = {A New Approach to Secure Logging},
+  author  = {Ma, Di and Tsudik, Gene},
+  journal = {ACM Transactions on Storage (TOS)},
+  volume  = {5},
+  number  = {1},
+  pages   = {2:1--2:21},
+  year    = {2009},
+  doi     = {10.1145/1502777.1502779}
+}
+
+% Privacy + auditability on Fabric via Pedersen commitments and ZK proofs.
+% Directly comparable to your PDC + detailsHash design.
+@inproceedings{kang2019fabzk,
+  title     = {{FabZK}: Supporting Privacy-Preserving, Auditable Smart
+               Contracts in Hyperledger Fabric},
+  author    = {Kang, Hui and Dai, Ting and Jean-Louis, Nerla and Tao, Shu and
+               Gu, Xiaohui},
+  booktitle = {49th Annual IEEE/IFIP International Conference on Dependable
+               Systems and Networks (DSN 2019)},
+  pages     = {543--555},
+  year      = {2019},
+  publisher = {IEEE},
+  doi       = {10.1109/DSN.2019.00061}
+}
+
+
+% =============================================================================
+%  3. DATASET & TEMPORAL GRAPH BASELINES
+% =============================================================================
+
+% Extends Elliptic with 822k wallet addresses and 1.27M temporal interactions.
+% Worth adopting; it is becoming the standard for this task.
+@inproceedings{elmougy2023ellipticpp,
+  title     = {Demystifying Fraudulent Transactions and Illicit Nodes in the
+               Bitcoin Network for Financial Forensics},
+  author    = {Elmougy, Youssef and Liu, Ling},
+  booktitle = {Proceedings of the 29th ACM SIGKDD Conference on Knowledge
+               Discovery and Data Mining (KDD '23)},
+  year      = {2023},
+  publisher = {ACM},
+  doi       = {10.1145/3580305.3599803},
+  note      = {arXiv:2306.06108}
+}
+
+% The temporal GNN baseline on Elliptic (illicit F1 0.720) that your
+% GraphSAGE variant should be compared against.
+@inproceedings{pareja2020evolvegcn,
+  title     = {{EvolveGCN}: Evolving Graph Convolutional Networks for
+               Dynamic Graphs},
+  author    = {Pareja, Aldo and Domeniconi, Giacomo and Chen, Jie and
+               Ma, Tengfei and Suzumura, Toyotaro and Kanezashi, Hiroki and
+               Kaler, Tim and Schardl, Tao B. and Leiserson, Charles E.},
+  booktitle = {Proceedings of the Thirty-Fourth AAAI Conference on Artificial
+               Intelligence (AAAI 2020)},
+  pages     = {5363--5370},
+  year      = {2020}
+}
+
+
+% =============================================================================
+%  4. MODELS YOU ACTUALLY TRAIN
+% =============================================================================
+
+@article{breiman2001randomforest,
+  title   = {Random Forests},
+  author  = {Breiman, Leo},
+  journal = {Machine Learning},
+  volume  = {45},
+  number  = {1},
+  pages   = {5--32},
+  year    = {2001},
+  doi     = {10.1023/A:1010933404324}
+}
+
+@inproceedings{chen2016xgboost,
+  title     = {{XGBoost}: A Scalable Tree Boosting System},
+  author    = {Chen, Tianqi and Guestrin, Carlos},
+  booktitle = {Proceedings of the 22nd ACM SIGKDD International Conference on
+               Knowledge Discovery and Data Mining (KDD '16)},
+  pages     = {785--794},
+  year      = {2016},
+  publisher = {ACM},
+  doi       = {10.1145/2939672.2939785}
+}
+
+@inproceedings{ke2017lightgbm,
+  title     = {{LightGBM}: A Highly Efficient Gradient Boosting Decision Tree},
+  author    = {Ke, Guolin and Meng, Qi and Finley, Thomas and Wang, Taifeng and
+               Chen, Wei and Ma, Weidong and Ye, Qiwei and Liu, Tie-Yan},
+  booktitle = {Advances in Neural Information Processing Systems 30
+               (NeurIPS 2017)},
+  pages     = {3146--3154},
+  year      = {2017}
+}
+
+% Class imbalance handling on your training split.
+@article{chawla2002smote,
+  title   = {{SMOTE}: Synthetic Minority Over-sampling Technique},
+  author  = {Chawla, Nitesh V. and Bowyer, Kevin W. and Hall, Lawrence O. and
+             Kegelmeyer, W. Philip},
+  journal = {Journal of Artificial Intelligence Research},
+  volume  = {16},
+  pages   = {321--357},
+  year    = {2002},
+  doi     = {10.1613/jair.953}
+}
+
+
+% =============================================================================
+%  5. EXPLAINABILITY  — you serialize SHAP values on-chain, so cite both
+% =============================================================================
+
+@inproceedings{lundberg2017shap,
+  title     = {A Unified Approach to Interpreting Model Predictions},
+  author    = {Lundberg, Scott M. and Lee, Su-In},
+  booktitle = {Advances in Neural Information Processing Systems 30
+               (NeurIPS 2017)},
+  pages     = {4765--4774},
+  year      = {2017}
+}
+
+@inproceedings{ribeiro2016lime,
+  title     = {``Why Should {I} Trust You?'': Explaining the Predictions of
+               Any Classifier},
+  author    = {Ribeiro, Marco Tulio and Singh, Sameer and Guestrin, Carlos},
+  booktitle = {Proceedings of the 22nd ACM SIGKDD International Conference on
+               Knowledge Discovery and Data Mining (KDD '16)},
+  pages     = {1135--1144},
+  year      = {2016},
+  publisher = {ACM},
+  doi       = {10.1145/2939672.2939778}
+}
+
+
+% =============================================================================
+%  6. BACKGROUND & SURVEYS  — use sparingly, one citation each
+% =============================================================================
+
+@misc{nakamoto2008bitcoin,
+  title  = {Bitcoin: A Peer-to-Peer Electronic Cash System},
+  author = {Nakamoto, Satoshi},
+  year   = {2008},
+  note   = {White paper}
+}
+
+@article{akoglu2015anomaly,
+  title   = {Graph Based Anomaly Detection and Description: A Survey},
+  author  = {Akoglu, Leman and Tong, Hanghang and Koutra, Danai},
+  journal = {Data Mining and Knowledge Discovery},
+  volume  = {29},
+  number  = {3},
+  pages   = {626--688},
+  year    = {2015},
+  doi     = {10.1007/s10618-014-0365-y}
+}
+
+@article{ngai2011fraud,
+  title   = {The Application of Data Mining Techniques in Financial Fraud
+             Detection: A Classification Framework and an Academic Review of
+             Literature},
+  author  = {Ngai, Eric W. T. and Hu, Yong and Wong, Y. H. and Chen, Yijun and
+             Sun, Xin},
+  journal = {Decision Support Systems},
+  volume  = {50},
+  number  = {3},
+  pages   = {559--569},
+  year    = {2011},
+  doi     = {10.1016/j.dss.2010.08.006}
+}
+
+@article{casino2019blockchainreview,
+  title   = {A Systematic Literature Review of Blockchain-Based Applications:
+             Current Status, Classification and Open Issues},
+  author  = {Casino, Fran and Dasaklis, Thomas K. and Patsakis, Constantinos},
+  journal = {Telematics and Informatics},
+  volume  = {36},
+  pages   = {55--81},
+  year    = {2019},
+  doi     = {10.1016/j.tele.2018.11.006}
+}
+
+
+% =============================================================================
+%  7. OPTIONAL  — include only if the text actually discusses them
+% =============================================================================
+
+@inproceedings{velickovic2018gat,
+  title     = {Graph Attention Networks},
+  author    = {Veli{\v{c}}kovi{\'c}, Petar and Cucurull, Guillem and
+               Casanova, Arantxa and Romero, Adriana and Li{\`o}, Pietro and
+               Bengio, Yoshua},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2018}
+}
+
+% NB: this is PinSage, NOT GraphSAGE. Your old key "ying2018graphsage" was
+% mislabelled. Cite it only if you discuss web-scale GNN deployment.
+@inproceedings{ying2018pinsage,
+  title     = {Graph Convolutional Neural Networks for Web-Scale Recommender
+               Systems},
+  author    = {Ying, Rex and He, Ruining and Chen, Kaifeng and
+               Eksombatchai, Pong and Hamilton, William L. and Leskovec, Jure},
+  booktitle = {Proceedings of the 24th ACM SIGKDD International Conference on
+               Knowledge Discovery and Data Mining (KDD '18)},
+  pages     = {974--983},
+  year      = {2018},
+  publisher = {ACM},
+  doi       = {10.1145/3219819.3219890}
+}

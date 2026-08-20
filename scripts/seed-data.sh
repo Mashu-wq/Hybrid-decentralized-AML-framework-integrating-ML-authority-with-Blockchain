@@ -51,7 +51,16 @@ INSERT INTO iam.users (id, email, password_hash, role_id, mfa_enabled, active) V
     ('a0000000-0000-0000-0000-000000000004', 'auditor@fraud.local',
      '$2a$12$gZsW6zoCj5J0O/UEuWTpp.NDxx7l4VqSPq9f7hI/7iKsM0kDkmNzm',
      (SELECT id FROM iam.roles WHERE name='AUDITOR'),      false, true)
-ON CONFLICT (email) DO NOTHING;
+-- Re-seeding restores the documented password and clears any lockout: DO NOTHING
+-- left accounts whose password had drifted permanently unusable, since the
+-- credentials printed at the end of this script no longer matched the stored hash.
+ON CONFLICT (email) DO UPDATE SET
+    password_hash   = EXCLUDED.password_hash,
+    role_id         = EXCLUDED.role_id,
+    active          = true,
+    failed_attempts = 0,
+    locked_until    = NULL,
+    updated_at      = NOW();
 
 SELECT 'IAM users: ' || count(*) AS status FROM iam.users;
 SQL

@@ -12,7 +12,10 @@ log_info()    { echo -e "${BLUE}[RUN]${NC}  $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC}   $1"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
-if [ -f ".env" ]; then source .env; fi
+# `set -a` marks everything sourced from here as exported. Without it the vars
+# are plain shell variables and the `go run` children below inherit nothing,
+# so every service dies with "POSTGRES_PASSWORD is required" / "JWT_SECRET ...".
+if [ -f ".env" ]; then set -a; source .env; set +a; fi
 
 # --- Check infra is up ---
 if ! docker exec fds-postgres pg_isready -U "${POSTGRES_USER:-fraud_user}" &>/dev/null; then

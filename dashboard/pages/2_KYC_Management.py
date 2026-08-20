@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime
 
 from utils import api
+from utils.risk import risk_level_from_score, PRIORITY_MAP
 
 st.set_page_config(page_title="KYC Management", page_icon="👤", layout="wide")
 
@@ -198,10 +199,14 @@ with tab_detail:
             alert_list = []
         if alert_list:
             df_al = pd.DataFrame(alert_list)
-            # Alerts carry an integer `priority`, not a `risk_level` string — derive it.
-            _PRIO = {4: "CRITICAL", 3: "HIGH", 2: "MEDIUM", 1: "LOW", 0: "UNSPECIFIED"}
-            if "priority" in df_al.columns and "risk_level" not in df_al.columns:
-                df_al["risk_level"] = df_al["priority"].map(_PRIO)
+            # Risk level is driven by the composite risk_score (matches on-chain
+            # and the Fraud Alerts page), falling back to the ML-probability-derived
+            # priority only if the score is absent.
+            df_al["risk_level"] = df_al.apply(
+                lambda r: risk_level_from_score(r.get("risk_score"))
+                or PRIORITY_MAP.get(r.get("priority", 0), "—"),
+                axis=1,
+            )
             cols = [c for c in ["alert_id", "fraud_probability", "risk_level",
                                 "status", "created_at"] if c in df_al.columns]
             st.dataframe(df_al[cols], use_container_width=True)
@@ -280,13 +285,36 @@ with tab_chain:
     with col_btn2:
         fetch_history = st.button("Fetch Change History")
 
+    def _show_lookup_error(label, err, cid):
+        """Render a clear, non-alarming message instead of a raw HTTP error."""
+        e = (err or "").lower()
+        if "not found" in e or "does not exist" in e:
+            st.warning(
+                f"No on-chain KYC record found for `{cid}`.\n\n"
+                "This is expected if the customer was **not registered & approved "
+                "while the Fabric network was running**, or if the ledger was reset "
+                "since they were onboarded. To get a verifiable record:\n"
+                "1. Register a customer in the **Register Customer** tab.\n"
+                "2. Approve them in the **Customer Detail** tab (this anchors the "
+                "record on the kyc-channel).\n"
+                "3. Paste that customer's ID here and look it up again."
+            )
+        elif "unavailable" in e or "timed out" in e or "refused" in e:
+            st.error(
+                "Blockchain service is offline. Start the network with "
+                "`make fabric-up && make chaincode-deploy` and ensure the "
+                "blockchain-service is running on :9005."
+            )
+        else:
+            st.error(f"{label}: {err}")
+
     if fetch_record and bcid.strip():
         record, err = api.get_kyc_on_chain(bcid.strip())
         if record:
             st.success("On-chain record found ✓")
             st.json(record)
         else:
-            st.error(f"Blockchain lookup failed: {err}")
+            _show_lookup_error("Blockchain lookup failed", err, bcid.strip())
 
     if fetch_history and bcid.strip():
         history, err = api.get_kyc_history_on_chain(bcid.strip())
@@ -294,4 +322,4 @@ with tab_chain:
             st.success("History retrieved ✓")
             st.json(history)
         else:
-            st.error(f"History unavailable: {err}")
+            _show_lookup_error("History unavailable", err, bcid.strip())

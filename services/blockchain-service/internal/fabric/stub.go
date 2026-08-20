@@ -20,6 +20,10 @@ func (g *unavailableGateway) Invoke(_ context.Context, channelName, _, _ string,
 	return "", nil, errors.New("fabric unavailable: " + g.reason)
 }
 
+func (g *unavailableGateway) InvokeWithTransient(_ context.Context, channelName, _, _ string, _ [][]byte, _ map[string][]byte, _ []string) (string, []byte, error) {
+	return "", nil, errors.New("fabric unavailable: " + g.reason)
+}
+
 func (g *unavailableGateway) Query(_ context.Context, channelName, _, _ string, _ [][]byte) ([]byte, error) {
 	return nil, errors.New("fabric unavailable: " + g.reason)
 }

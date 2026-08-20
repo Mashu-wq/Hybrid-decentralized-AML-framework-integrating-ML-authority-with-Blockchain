@@ -40,8 +40,17 @@ type Config struct {
 	TLSCertFile string
 
 	// DialTimeout is the maximum time to wait for the connection.
-	// Default: 10 seconds.
+	// Only applies to blocking dials. Default: 10 seconds.
 	DialTimeout time.Duration
+
+	// NonBlocking, when true, returns immediately without waiting for the
+	// connection to become ready. The returned ClientConn starts in IDLE,
+	// connects lazily on the first RPC, and transparently reconnects with
+	// backoff if the server is unavailable or restarts. Use this for
+	// fail-open dependencies (e.g. the ML scorer) so a slow-starting or
+	// briefly-unavailable server does not permanently disable the client.
+	// The caller is responsible for handling per-RPC errors (fail-open).
+	NonBlocking bool
 
 	// Log is the logger to use for client interceptors.
 	Log zerolog.Logger
@@ -75,7 +84,6 @@ func New(ctx context.Context, cfg Config) (*grpc.ClientConn, error) {
 	// Build dial options
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
-		grpc.WithBlock(),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                30 * time.Second,
 			Timeout:             10 * time.Second,
@@ -86,8 +94,16 @@ func New(ctx context.Context, cfg Config) (*grpc.ClientConn, error) {
 		),
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
-	defer cancel()
+	// A blocking dial waits (up to DialTimeout) for the connection to be ready
+	// and fails if the server is unreachable. A non-blocking dial returns an
+	// immediately-usable ClientConn that connects lazily and auto-reconnects.
+	dialCtx := ctx
+	if !cfg.NonBlocking {
+		opts = append(opts, grpc.WithBlock())
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithTimeout(ctx, cfg.DialTimeout)
+		defer cancel()
+	}
 
 	conn, err := grpc.DialContext(dialCtx, cfg.Target, opts...) //nolint:staticcheck
 	if err != nil {

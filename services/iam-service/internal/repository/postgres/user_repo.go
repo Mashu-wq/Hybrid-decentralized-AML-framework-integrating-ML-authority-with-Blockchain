@@ -282,7 +282,7 @@ func (r *UserRepo) CreateRefreshToken(ctx context.Context, t *domain.RefreshToke
 // GetRefreshToken retrieves a refresh token by its SHA-256 hash.
 func (r *UserRepo) GetRefreshToken(ctx context.Context, tokenHash string) (*domain.RefreshToken, error) {
 	const q = `
-		SELECT id, user_id, token_hash, device_id, ip_address, user_agent,
+		SELECT id, user_id, token_hash, device_id, ip_address::text, user_agent,
 		       expires_at, revoked_at, created_at
 		FROM iam.refresh_tokens
 		WHERE token_hash = $1

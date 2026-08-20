@@ -299,7 +299,16 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// pathParam returns the first path segment after prefix. Routes are registered
+// both bare and under /api/v1 (the gateway forwards the full path), so the
+// version prefix is stripped before matching. A path that does not carry the
+// prefix yields "" — callers turn that into 400 rather than looking up a
+// wrong id.
 func pathParam(path, prefix string) string {
+	path = strings.TrimPrefix(path, "/api/v1")
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
 	s := strings.TrimPrefix(path, prefix)
 	s = strings.TrimPrefix(s, "/")
 	return strings.Split(s, "/")[0]

@@ -184,5 +184,11 @@ def _structured_to_elliptic_array(features) -> np.ndarray:
     if 0 <= community < 10:
         arr[28 + community] = 1.0  # positions 28–37
 
-    # Remaining positions (38–84) left as 0 — unknown aggregated neighborhood features
+    # Remaining positions (38–84) left as 0 — unknown aggregated neighborhood
+    # features. Per sample this leaves 29 populated slots and 56 zeros (47 here
+    # plus the 9 unset one-hot community slots), which is the figure quoted in
+    # the paper. The models were fitted on Elliptic's own feature distribution,
+    # so a vector built this way is out of distribution: P(fraud) barely moves
+    # between a benign and a maximally suspicious transaction. Do not read the
+    # served probability as calibrated on bank data.
     return arr

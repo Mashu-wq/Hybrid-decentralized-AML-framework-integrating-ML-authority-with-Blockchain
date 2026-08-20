@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -512,28 +513,49 @@ type pgxRowScanner interface {
 
 func (r *KYCRepo) scanCustomer(row pgxRowScanner) (*domain.Customer, error) {
 	var c domain.Customer
-	var kycStatus, riskLevel string
+	var kycStatus string
 	var verifierID, rejectionReason, blockchainTxID *string
 	var reviewedAt *time.Time
+
+	// Optional profile columns are nullable for customers that have not yet
+	// completed onboarding (e.g. PENDING records with no risk level or partial
+	// KYC data). Scan them through NULL-tolerant holders so a single row with a
+	// NULL column cannot fail the whole query (was: list customers returned 500).
+	var (
+		riskLevel      sql.NullString
+		documentType   sql.NullString
+		countryOfIssue sql.NullString
+		nationality    sql.NullString
+		city           sql.NullString
+		countryCode    sql.NullString
+		postalCode     sql.NullString
+		occupation     sql.NullString
+		employer       sql.NullString
+		sourceOfFunds  sql.NullString
+		expectedVolume sql.NullFloat64
+		livenessPassed sql.NullBool
+		faceMatchScore sql.NullFloat64
+		ocrConfidence  sql.NullFloat64
+	)
 
 	err := row.Scan(
 		&c.ID,
 		&c.IdentityHash,
 		&kycStatus,
 		&riskLevel,
-		&c.DocumentType,
-		&c.CountryOfIssue,
-		&c.Nationality,
-		&c.City,
-		&c.CountryCode,
-		&c.PostalCode,
-		&c.Occupation,
-		&c.Employer,
-		&c.SourceOfFunds,
-		&c.ExpectedMonthlyVolume,
-		&c.LivenessPassed,
-		&c.FaceMatchScore,
-		&c.OCRConfidence,
+		&documentType,
+		&countryOfIssue,
+		&nationality,
+		&city,
+		&countryCode,
+		&postalCode,
+		&occupation,
+		&employer,
+		&sourceOfFunds,
+		&expectedVolume,
+		&livenessPassed,
+		&faceMatchScore,
+		&ocrConfidence,
 		&verifierID,
 		&rejectionReason,
 		&blockchainTxID,
@@ -549,7 +571,20 @@ func (r *KYCRepo) scanCustomer(row pgxRowScanner) (*domain.Customer, error) {
 	}
 
 	c.KYCStatus = domain.KYCStatus(kycStatus)
-	c.RiskLevel = domain.RiskLevel(riskLevel)
+	c.RiskLevel = domain.RiskLevel(riskLevel.String)
+	c.DocumentType = documentType.String
+	c.CountryOfIssue = countryOfIssue.String
+	c.Nationality = nationality.String
+	c.City = city.String
+	c.CountryCode = countryCode.String
+	c.PostalCode = postalCode.String
+	c.Occupation = occupation.String
+	c.Employer = employer.String
+	c.SourceOfFunds = sourceOfFunds.String
+	c.ExpectedMonthlyVolume = expectedVolume.Float64
+	c.LivenessPassed = livenessPassed.Bool
+	c.FaceMatchScore = faceMatchScore.Float64
+	c.OCRConfidence = ocrConfidence.Float64
 	if verifierID != nil {
 		c.VerifierID = *verifierID
 	}

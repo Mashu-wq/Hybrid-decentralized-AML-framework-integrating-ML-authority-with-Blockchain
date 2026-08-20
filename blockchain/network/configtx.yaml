@@ -38,9 +38,13 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org1.fraud-detection.example.com
         Port: 7051
-    # Org1 (PrimaryBank) administers orderer0 — distributed orderer ownership
-    OrdererEndpoints:
-      - orderer0.fraud-detection.example.com:7050
+    # Org1 (PrimaryBank) administers orderer0. Orderer *governance* is expressed in the
+    # Orderer group of the genesis profile (MAJORITY over Org1/Org2/Org3); the
+    # endpoint list must NOT be repeated here. A peer org that declares
+    # OrdererEndpoints makes the gateway verify the orderer's TLS certificate
+    # against that peer org's TLS root CA, but cryptogen issues orderer TLS
+    # certs from the OrdererMSP CA — every submit then fails with
+    # "certificate signed by unknown authority". Endpoints live on OrdererOrg.
 
   - &Org2
     Name: Org2MSP
@@ -62,9 +66,7 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org2.fraud-detection.example.com
         Port: 9051
-    # Org2 (Regulator) administers orderer1 — distributed orderer ownership
-    OrdererEndpoints:
-      - orderer1.fraud-detection.example.com:8050
+    # Org2 (Regulator) administers orderer1; no OrdererEndpoints here — see Org1 above.
 
   - &Org3
     Name: Org3MSP
@@ -86,9 +88,7 @@ Organizations:
     AnchorPeers:
       - Host: peer0.org3.fraud-detection.example.com
         Port: 11051
-    # Org3 (PartnerBank) administers orderer2 — distributed orderer ownership
-    OrdererEndpoints:
-      - orderer2.fraud-detection.example.com:9050
+    # Org3 (PartnerBank) administers orderer2; no OrdererEndpoints here — see Org1 above.
 
 Capabilities:
   Channel: &ChannelCapabilities

@@ -10,6 +10,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+import hashlib
 from datetime import datetime, timedelta
 
 from utils import api
@@ -49,6 +50,12 @@ if bc_health:
         for col, (channel, val) in zip(cols, details.items()):
             block_height = str(val).split("block_height=")[-1] if "block_height=" in str(val) else str(val)
             col.metric(channel, f"Block #{block_height}")
+        st.caption(
+            "Ledger height — the number of blocks on each channel. It increments "
+            "with every committed transaction (register a customer, score a "
+            "transaction, file a SAR…), and can only go up. Fire a transaction and "
+            "refresh to watch it tick up live."
+        )
     else:
         st.json(bc_health)
 else:
@@ -57,37 +64,205 @@ else:
 
 st.markdown("---")
 
-tab_trail, tab_compliance, tab_explorer = st.tabs([
-    "Audit Trail", "Compliance Report", "Architecture"
+tab_process, tab_trail, tab_compliance, tab_integrity, tab_explorer = st.tabs([
+    "🔗 Blockchain Process", "Audit Trail", "Compliance Report",
+    "🔒 Receipt Integrity", "Architecture"
 ])
+
+# ── Tab 0: Blockchain Process (end-to-end visualization) ──────────────────────
+with tab_process:
+    st.subheader("How a record becomes immutable — first to last")
+    st.caption(
+        "Follow one transaction from submission to a permanent, multi-org-signed "
+        "block. This is the Hyperledger Fabric execute → order → validate flow."
+    )
+
+    # ① Transaction lifecycle (Graphviz flow) ----------------------------------
+    st.markdown("#### ① Transaction Lifecycle")
+    st.graphviz_chart(r'''
+    digraph G {
+      rankdir=LR; bgcolor="#0f1117"; pad=0.3; nodesep=0.35; ranksep=0.55;
+      node [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11];
+      edge [color="#9ca3af" penwidth=1.4];
+
+      tx     [label="1. Transaction\ndemo-suspicious-001" fillcolor="#3b82f6" fontcolor=white];
+      client [label="2. Blockchain Service\n(client SDK proposes)" fillcolor="#22c55e" fontcolor=white];
+      subgraph cluster_e {
+        label="3. Endorse: each org simulates + signs"; style="rounded,dashed";
+        color="#3d4470"; fontcolor="#93c5fd"; fontname="Helvetica";
+        o1 [label="Org1\nPrimaryBank" fillcolor="#1a1d27" fontcolor="#e0e0e0"];
+        o2 [label="Org2\nRegulator"   fillcolor="#1a1d27" fontcolor="#e0e0e0"];
+        o3 [label="Org3\nPartnerBank" fillcolor="#1a1d27" fontcolor="#e0e0e0"];
+      }
+      order  [label="4. Ordering Service\nRaft · 3 orderers\nbatch -> block" fillcolor="#a855f7" fontcolor=white];
+      valid  [label="5. Validate\nMAJORITY >= 2 of 3\n+ conflict check" fillcolor="#f97316" fontcolor=white];
+      commit [label="6. Commit\nappend block · height +1" fillcolor="#ef4444" fontcolor=white];
+
+      tx -> client;
+      client -> o1; client -> o2; client -> o3;
+      o1 -> order; o2 -> order; o3 -> order;
+      order -> valid -> commit;
+    }
+    ''')
+    st.caption(
+        "Nothing touches the ledger until step 6. Steps 3–5 are what make it "
+        "trustworthy: several organizations independently sign, and a majority "
+        "must agree before the block is committed."
+    )
+
+    # ② Multi-org MAJORITY simulator -------------------------------------------
+    st.markdown("---")
+    st.markdown("#### ② Multi-Org Trust — the MAJORITY rule (interactive)")
+    st.caption(
+        "Every block must be endorsed by a MAJORITY of organizations (≥ 2 of 3). "
+        "Toggle which orgs sign and watch whether the block commits. No single "
+        "party — not even the bank — can write to the ledger alone."
+    )
+    orgs = [("Org1 · PrimaryBank", "#3b82f6", True),
+            ("Org2 · Regulator",   "#22c55e", True),
+            ("Org3 · PartnerBank", "#a855f7", False)]
+    o_cols = st.columns(3)
+    signs = []
+    for col, (name, c, default) in zip(o_cols, orgs):
+        with col:
+            st.markdown(
+                f"<div style='text-align:center;font-weight:700;color:{c}'>{name}</div>"
+                "<div style='text-align:center;font-size:1.4rem;margin:4px 0'>📒</div>"
+                "<div style='text-align:center;color:#9ca3af;font-size:0.75rem'>"
+                "holds a full copy of the ledger</div>",
+                unsafe_allow_html=True,
+            )
+            signs.append(st.checkbox("signs this block", value=default, key=f"sign_{name}"))
+    n_signed = sum(signs)
+    if n_signed >= 2:
+        st.success(f"✅ {n_signed} of 3 signed → MAJORITY met → block **COMMITTED** to all three ledgers.")
+    else:
+        st.error(f"⛔ {n_signed} of 3 signed → MAJORITY not met → block **REJECTED**; the transaction does not commit.")
+    st.caption(
+        "Because the **Regulator (Org2)** runs its own peer and holds an identical "
+        "copy, it verifies every record independently — the bank cannot fabricate "
+        "or delete history on its own."
+    )
+
+    # ③ Immutable chain + tamper demo (live heights) ---------------------------
+    st.markdown("---")
+    st.markdown("#### ③ The Immutable Chain (live block heights)")
+
+    def _heights(d):
+        out = {}
+        for ch, val in (d or {}).items():
+            s = str(val)
+            part = s.split("block_height=")[-1] if "block_height=" in s else ""
+            try:
+                out[ch] = int(part)
+            except ValueError:
+                out[ch] = None
+        return out
+
+    heights = _heights(details)
+    ch_list = [c for c in heights if heights[c]] or ["audit-channel"]
+    sel_ch = st.selectbox("Channel", ch_list, index=0)
+    H = heights.get(sel_ch) or 3
+    st.caption(
+        f"`{sel_ch}` is currently at **block #{H}**. Each block stores the hash of "
+        "the previous one — change any block and every later hash breaks."
+    )
+
+    def _hash(n):
+        return hashlib.sha256(f"{sel_ch}-block-{n}".encode()).hexdigest()[:12]
+
+    tampered = max(H - 2, 0)
+    do_tamper = st.checkbox(f"🔓 Simulate tampering with an old block (edit Block #{tampered})")
+
+    blocks = [b for b in (H - 2, H - 1, H) if b >= 0]
+    cards = []
+    for i, n in enumerate(blocks):
+        broken = do_tamper and n >= tampered
+        border = "#ef4444" if broken else "#22c55e"
+        status = "✗ HASH MISMATCH" if broken else "✓ valid"
+        prev = "genesis" if n == 0 else _hash(n - 1)
+        datah = _hash(n) + ("  (edited!)" if do_tamper and n == tampered else "")
+        cards.append(
+            "<div style='display:inline-block;vertical-align:top;background:#1a1d27;"
+            f"border:2px solid {border};border-radius:8px;padding:10px 12px;width:210px'>"
+            f"<div style='font-weight:700;color:#e0e0e0'>Block #{n}</div>"
+            f"<div style='color:#9ca3af;font-size:0.72rem;margin-top:6px'>dataHash<br>"
+            f"<code style='color:#bfdbfe'>{datah}</code></div>"
+            f"<div style='color:#9ca3af;font-size:0.72rem;margin-top:4px'>prevHash<br>"
+            f"<code style='color:#bfdbfe'>{prev}</code></div>"
+            f"<div style='margin-top:6px;color:{border};font-weight:600;font-size:0.8rem'>{status}</div>"
+            "</div>"
+        )
+    arrow = "<span style='font-size:1.5rem;color:#9ca3af;margin:0 6px'>→</span>"
+    st.markdown(
+        "<div style='white-space:nowrap;overflow-x:auto;padding:4px 0'>"
+        + arrow.join(cards) + "</div>",
+        unsafe_allow_html=True,
+    )
+    if do_tamper:
+        st.error(
+            "Editing an old block changes its hash, so the next block's prevHash no "
+            "longer matches — every block after it becomes invalid and the peers "
+            "reject the ledger. **That is why the chain is tamper-evident.**"
+        )
+    else:
+        st.info(
+            "Each block's prevHash equals the previous block's dataHash, forming an "
+            "unbroken chain back to the genesis block (#0)."
+        )
+    st.caption(
+        "Hashes shown are illustrative (real Fabric hashes are 64-hex SHA-256). "
+        "Block heights are live from the network — fire a transaction and refresh "
+        "to watch the height increment."
+    )
 
 # ── Tab 1: Audit Trail ────────────────────────────────────────────────────────
 with tab_trail:
     st.subheader("Entity Audit Trail Query")
     st.markdown(
-        "Look up the immutable event history for any entity "
-        "(transaction hash, customer ID, case ID, alert ID)."
+        "Look up the immutable event history on the **audit-channel** for a "
+        "**transaction** (by tx hash) or a **case** (by case ID)."
     )
 
     c1, c2 = st.columns(2)
     with c1:
         entity_id = st.text_input("Entity ID",
-            placeholder="Transaction hash / Customer ID / Case ID…")
+            placeholder="Transaction hash (e.g. demo-suspicious-001) / Case ID…")
     with c2:
-        entity_type = st.selectbox("Entity Type",
-            ["TRANSACTION", "CUSTOMER", "ALERT", "CASE", "SAR"])
+        # Only TRANSACTION and CASE entities are written to the audit-channel.
+        # Alerts live on the alert-channel, KYC on the kyc-channel — querying
+        # those here would always return empty, so they are not offered.
+        entity_type = st.selectbox("Entity Type", ["TRANSACTION", "CASE"])
 
     if st.button("Query Audit Trail", type="primary") and entity_id.strip():
         trail_data, trail_err = api.get_audit_trail(entity_id.strip(), entity_type)
 
-        if trail_data:
-            events = trail_data.get("events", []) if isinstance(trail_data, dict) else trail_data
-        else:
-            st.error(f"Blockchain service unavailable: {trail_err}. Start with `make fabric-up` then `make chaincode-deploy`.")
+        # A real failure has a non-None error (e.g. connection refused). An empty
+        # list is a SUCCESSFUL query that simply found no records — it must NOT be
+        # reported as "service unavailable".
+        if trail_err:
+            st.error(
+                f"Blockchain service error: {trail_err}. "
+                "Start with `make fabric-up` then `make chaincode-deploy`."
+            )
             st.stop()
 
+        if isinstance(trail_data, dict):
+            events = trail_data.get("events") or trail_data.get("payload") or []
+        else:
+            events = trail_data or []
+
         if not events:
-            st.info("No audit events found for this entity.")
+            st.info(
+                f"No on-chain audit records found for `{entity_id.strip()}` as "
+                f"**{entity_type}**.\n\n"
+                "The **audit-channel** stores TRANSACTION receipts and CASE events "
+                "(investigator actions, SAR filings). Check the ID matches the type:\n\n"
+                "- **TRANSACTION** → a transaction hash (e.g. `demo-suspicious-001`)\n"
+                "- **CASE** → a case ID (e.g. `case-…`)\n\n"
+                "Alerts are anchored on the separate *alert-channel*, not the audit "
+                "trail, so an alert or customer ID returns nothing here."
+            )
         else:
             st.success(f"Found **{len(events)}** on-chain events for `{entity_id.strip()}`")
 
@@ -301,3 +476,100 @@ with tab_explorer:
         height=360, margin=dict(t=10, b=0, l=0, r=0),
     )
     st.plotly_chart(fig_sankey, use_container_width=True)
+
+# ── Tab 3: Receipt Integrity (completeness + privacy) ─────────────────────────
+with tab_integrity:
+    st.subheader("Gap-Free Receipt Sequence — Audit Completeness")
+    st.markdown(
+        "Every ML-scored transaction is anchored with a **chaincode-assigned, "
+        "per-organization sequence number** (always last + 1). The on-chain series "
+        "is gap-free *by construction*, so the latest sequence equals the exact "
+        "number of receipts the bank has ever anchored. A regulator reconciles it "
+        "against the bank's independently reported transaction volume — any "
+        "shortfall is **provable evidence of omitted transactions**, and "
+        "backfilling is visible as a skew between sequence order and the "
+        "`processedAt` timestamps."
+    )
+
+    seq_data, seq_err = api.get_audit_sequence_status()
+    if seq_err:
+        st.error(f"Blockchain service error: {seq_err}")
+    elif not seq_data:
+        st.info(
+            "No receipts anchored yet — the sequence counters appear after the "
+            "first transaction is scored (see `docs/dashboard_test_steps.txt`)."
+        )
+    else:
+        cols = st.columns(max(len(seq_data), 1))
+        for col, s in zip(cols, seq_data):
+            col.metric(f"{s.get('mspId', '—')} receipts", f"{s.get('latestSequence', 0):,}")
+        st.caption(
+            "Latest receipt sequence per organization. Receipts 1…N all exist on "
+            "the ledger — the chaincode rejects anything else."
+        )
+
+        st.markdown("##### Reconcile against the bank's processed-transaction count")
+        st.caption(
+            "In production this number comes from an independent source (the "
+            "bank's core system count, or the regulator's reported-volume figure) "
+            "— never from the chain itself."
+        )
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            expected = st.number_input("Expected transaction count", min_value=0, value=0, step=1)
+        if st.button("Check Completeness", type="primary"):
+            comp, comp_err = api.get_audit_completeness(expected)
+            if comp_err or not comp:
+                st.error(f"Completeness check failed: {comp_err}")
+            else:
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Anchored receipts", f"{comp.get('anchored_receipts', 0):,}")
+                k2.metric("Expected", f"{comp.get('expected_count', 0):,}")
+                k3.metric("Missing", f"{comp.get('missing_receipts', 0):,}")
+                if comp.get("complete"):
+                    st.success(
+                        f"✓ Complete — every processed transaction has an on-chain "
+                        f"receipt ({comp.get('msp_id', '')})."
+                    )
+                else:
+                    st.error(
+                        f"✗ {comp.get('missing_receipts', 0)} transaction(s) were "
+                        "processed but never anchored — a provable audit omission."
+                    )
+
+    st.markdown("---")
+    st.subheader("Private Receipt Details — What Each Org Can See")
+    st.markdown(
+        "The shared ledger record carries only **fraud metadata + a SHA-256 digest** "
+        "of the business details. The details themselves (customer pseudonym, "
+        "amount, corridor) live in a **Private Data Collection** shared by the "
+        "issuing bank and the regulator only — the partner bank stores just the "
+        "hash. Customer IDs are **HMAC-pseudonymized** before they ever leave the "
+        "bank, so no raw identifier reaches any channel."
+    )
+
+    detail_id = st.text_input(
+        "Receipt record ID (= transaction hash)",
+        placeholder="e.g. demo-suspicious-001",
+        key="receipt_details_id",
+    )
+    if st.button("Fetch Private Details") and detail_id.strip():
+        details, det_err = api.get_receipt_details_on_chain(detail_id.strip())
+        if det_err or not details:
+            st.error(
+                f"Lookup failed: {det_err}. Either the receipt does not exist, or "
+                "this peer's org is not a member of the private collection "
+                "(which is exactly the point — Org3/PartnerBank gets this error)."
+            )
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Private details** (bank + regulator only)")
+                st.json(details.get("details", {}))
+            with c2:
+                st.markdown("**Integrity check** (against the public record)")
+                if details.get("verified"):
+                    st.success("✓ SHA-256(private details) matches the on-chain detailsHash")
+                else:
+                    st.error("✗ Hash mismatch — private data was tampered with")
+                st.caption(f"detailsHash: `{details.get('detailsHash', '—')}`")

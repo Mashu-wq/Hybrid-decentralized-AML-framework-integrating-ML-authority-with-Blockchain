@@ -132,22 +132,31 @@ func run() error {
 	// -------------------------------------------------------------------------
 	// 6. ML Service gRPC
 	// -------------------------------------------------------------------------
+	// Dial the ML service non-blocking: the connection is established lazily and
+	// gRPC transparently reconnects with backoff. This means a slow-starting ML
+	// service (it loads 6 models on boot) no longer permanently pins the pipeline
+	// to the heuristic fallback — PredictFraud fails open per-call while ML is
+	// unavailable and automatically resumes real predictions once it is up.
 	var mlClient *clients.MLClient
 	mlConn, mlErr := grpcclient.New(ctx, grpcclient.Config{
 		Target:        cfg.MLServiceAddr,
 		CallerService: cfg.ServiceName,
 		TLS:           false, // TODO: TLS in production
 		DialTimeout:   10 * time.Second,
+		NonBlocking:   true,
 		Log:           log,
 	})
 	if mlErr != nil {
+		// With a non-blocking dial only a malformed target reaches here; still
+		// fail open so transaction recording proceeds on the heuristic fallback.
 		log.Warn().Err(mlErr).Str("addr", cfg.MLServiceAddr).
-			Msg("ML service unavailable at startup — heuristic fallback active")
+			Msg("ML service gRPC dial failed — heuristic fallback active")
 		// Pass nil conn — MLClient.PredictFraud handles nil conn gracefully via fallback
 	}
 	mlClient = clients.NewMLClient(mlConn, cfg.MLServiceTimeout, log)
 	if mlErr == nil {
-		log.Info().Str("addr", cfg.MLServiceAddr).Msg("ML service gRPC connected")
+		log.Info().Str("addr", cfg.MLServiceAddr).
+			Msg("ML service gRPC client ready (lazy connect, auto-reconnect)")
 	}
 
 	// -------------------------------------------------------------------------

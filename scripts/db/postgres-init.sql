@@ -280,17 +280,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Apply trigger to all tables with updated_at
+-- Apply trigger to all tables with updated_at.
+-- The set is derived from the actual columns rather than a hand-maintained
+-- exclusion list: attaching this trigger to a table without an updated_at
+-- column makes every UPDATE on it fail with
+--   ERROR: record "new" has no field "updated_at" (SQLSTATE 42703)
+-- which previously broke refresh-token rotation on iam.refresh_tokens.
 DO $$
 DECLARE
     t record;
 BEGIN
     FOR t IN
-        SELECT schemaname, tablename
-        FROM pg_tables
-        WHERE schemaname IN ('iam','kyc','alerts','cases')
-          AND tablename NOT IN ('audit_log','notifications','evidence','timeline','documents')
+        SELECT c.table_schema AS schemaname, c.table_name AS tablename
+        FROM information_schema.columns c
+        JOIN information_schema.tables tb
+          ON tb.table_schema = c.table_schema
+         AND tb.table_name  = c.table_name
+         AND tb.table_type  = 'BASE TABLE'
+        WHERE c.table_schema IN ('iam','kyc','alerts','cases')
+          AND c.column_name = 'updated_at'
     LOOP
+        EXECUTE format(
+            'DROP TRIGGER IF EXISTS trg_updated_at ON %I.%I',
+            t.schemaname, t.tablename
+        );
         EXECUTE format(
             'CREATE TRIGGER trg_updated_at BEFORE UPDATE ON %I.%I
              FOR EACH ROW EXECUTE FUNCTION update_updated_at()',

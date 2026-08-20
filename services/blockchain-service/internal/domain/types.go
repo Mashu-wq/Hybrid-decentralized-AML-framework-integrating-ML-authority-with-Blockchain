@@ -86,6 +86,18 @@ type SARFiledRequest struct {
 	GeneratedBy string `json:"generated_by"`
 }
 
+// CompletenessResponse is the result of reconciling the on-chain receipt count
+// (latest per-org sequence number, gap-free by chaincode construction) against an
+// independently sourced count of processed transactions. missing_receipts > 0
+// means transactions were processed but never anchored — a provable omission.
+type CompletenessResponse struct {
+	MSPID            string `json:"msp_id"`
+	AnchoredReceipts uint64 `json:"anchored_receipts"`
+	ExpectedCount    uint64 `json:"expected_count"`
+	MissingReceipts  uint64 `json:"missing_receipts"`
+	Complete         bool   `json:"complete"`
+}
+
 type HealthResponse struct {
 	Status  string            `json:"status"`
 	Details map[string]string `json:"details"`

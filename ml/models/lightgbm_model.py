@@ -1,11 +1,13 @@
 """
 LightGBM fraud detection model — best performer by ROC-AUC.
 
-Training results (Google Colab):
-  Precision  : 64.61 %
-  Recall     : 68.18 %
-  F1         : 66.35 %
-  ROC-AUC    : 96.49 %   ← highest of three models
+Training results (training report, 2026-07-07):
+  Precision  : 67.08 %
+  Recall     : 65.21 %   ← highest of three models
+  F1         : 66.13 %
+  ROC-AUC    : 96.33 %   ← highest of three models
+  MCC        : 0.6430
+  Confusion  : TN 8,979 / FP 161 / FN 175 / TP 328
 """
 from __future__ import annotations
 

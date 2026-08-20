@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Audit reads
 	mux.HandleFunc("/internal/v1/audit/trail", h.handleGetAuditTrail)
 	mux.HandleFunc("/internal/v1/audit/compliance", h.handleGetComplianceReport)
+	mux.HandleFunc("/internal/v1/audit/sequence", h.handleGetAuditSequence)
+	mux.HandleFunc("/internal/v1/audit/completeness", h.handleGetAuditCompleteness)
+	mux.HandleFunc("/internal/v1/audit/receipt-details/", h.handleGetReceiptDetails)
 }
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +280,63 @@ func (h *Handler) handleGetComplianceReport(w http.ResponseWriter, r *http.Reque
 	h.writeJSON(w, http.StatusOK, resp)
 }
 
+// handleGetAuditSequence returns the latest TRANSACTION_PROCESSED sequence number
+// per organization — the regulator's audit-completeness checkpoint.
+func (h *Handler) handleGetAuditSequence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	resp, err := h.svc.GetAuditSequenceStatus(r.Context())
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleGetAuditCompleteness reconciles this org's anchored receipt count against
+// an expected transaction count supplied by the caller (e.g. the bank's MongoDB
+// count, or the regulator's reported-volume figure).
+func (h *Handler) handleGetAuditCompleteness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("expected_count"))
+	if raw == "" {
+		h.writeError(w, fmt.Errorf("expected_count query param is required"))
+		return
+	}
+	expected, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		h.writeError(w, fmt.Errorf("expected_count must be a non-negative integer"))
+		return
+	}
+	resp, err := h.svc.GetAuditCompleteness(r.Context(), expected)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+// handleGetReceiptDetails returns the private half of a processing receipt from
+// the bank+regulator Private Data Collection, hash-verified by the chaincode.
+func (h *Handler) handleGetReceiptDetails(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	recordID := strings.TrimPrefix(r.URL.Path, "/internal/v1/audit/receipt-details/")
+	resp, err := h.svc.GetReceiptDetails(r.Context(), recordID)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, fn func(context.Context) (interface{}, error)) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -301,5 +362,23 @@ func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload interface
 
 func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	h.log.Error().Err(err).Msg("request failed")
-	h.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	h.writeJSON(w, statusForError(err), map[string]string{"error": err.Error()})
+}
+
+// statusForError maps a service/chaincode error to the most appropriate HTTP
+// status. A missing ledger record is a 404 (not a 400 "bad request"); an
+// unreachable Fabric network is a 503. Everything else stays a generic 400.
+func statusForError(err error) int {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "not found"), strings.Contains(msg, "does not exist"):
+		return http.StatusNotFound
+	case strings.Contains(msg, "unavailable"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "no connection"),
+		strings.Contains(msg, "deadline exceeded"):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadRequest
+	}
 }

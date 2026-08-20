@@ -15,7 +15,7 @@ Pipeline:
   1. Load and merge feature + class files
   2. Drop unknown labels — keep only labeled data
   3. Remap labels: 1→1 (fraud), 2→0 (legit)
-  4. Temporal train/test split on time_step (first 70% → train, rest → test)
+  4. Temporal train/test split on time_step (first 80% → train, rest → test)
   5. Apply SMOTE to training set only
   6. Return (X_train, X_test, y_train, y_test, feature_names)
 """
@@ -51,7 +51,7 @@ ILLICIT_LABEL = 1
 LICIT_LABEL   = 2
 UNKNOWN_LABEL = "unknown"
 
-TRAIN_SPLIT_RATIO = 0.70  # first 70 time steps → train (temporal split)
+TRAIN_SPLIT_RATIO = 0.80  # first 80% of time steps → train (steps 1–39 of 49)
 SMOTE_RANDOM_STATE = 42
 
 

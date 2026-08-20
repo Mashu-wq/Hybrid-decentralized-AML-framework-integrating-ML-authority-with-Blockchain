@@ -11,6 +11,7 @@ import pandas as pd
 import json
 
 from utils import api
+from utils.risk import risk_level_from_score
 
 st.set_page_config(page_title="Fraud Alerts", page_icon="🚨", layout="wide")
 
@@ -89,8 +90,12 @@ with tab_list:
     else:
         st.session_state["alert_list"] = alerts
         df = pd.DataFrame(alerts)
-        if "priority" in df.columns:
-            df["risk_level"] = df["priority"].map(PRIORITY_MAP).fillna(df.get("risk_level","—"))
+        # Risk level is driven by the composite risk_score (matches on-chain),
+        # falling back to the ML-probability-derived priority if score is absent.
+        def _row_risk_level(row):
+            lvl = risk_level_from_score(row.get("risk_score"))
+            return lvl if lvl else PRIORITY_MAP.get(row.get("priority", 0), "—")
+        df["risk_level"] = df.apply(_row_risk_level, axis=1)
         df["fraud_pct"] = (df["fraud_probability"]*100).round(1).astype(str)+"%"
         display = [c for c in ["alert_id","customer_id","fraud_pct","risk_level",
                                 "status","model_version","created_at"] if c in df.columns]
@@ -117,19 +122,38 @@ with tab_detail:
         col_a, col_b = st.columns([2,1])
         with col_a:
             prob  = alert.get("fraud_probability", 0)
-            rl    = alert.get("risk_level",
-                              PRIORITY_MAP.get(alert.get("priority",0),"—"))
+            rl    = (risk_level_from_score(alert.get("risk_score"))
+                     or alert.get("risk_level")
+                     or PRIORITY_MAP.get(alert.get("priority",0),"—"))
             color = RISK_COLORS.get(rl, "#6b7280")
+            try:
+                score_val = float(alert.get("risk_score"))
+            except (TypeError, ValueError):
+                score_val = prob*100
             st.markdown(f"#### Alert `{alert['alert_id']}`")
-            st.markdown(
-                f"**Fraud Probability:** <span style='color:{color};font-size:1.4rem;"
-                f"font-weight:700'>{prob*100:.1f}%</span>",
-                unsafe_allow_html=True,
+
+            # Two clearly-separated numbers so they are never conflated: the
+            # COMPOSITE risk score drives the decision; the ML probability is a
+            # minor (10%) input that stays low by design on bank-wire features.
+            m1, m2 = st.columns(2)
+            m1.metric("Composite Risk Score", f"{score_val:.1f} / 100", rl)
+            m2.metric("ML Fraud Probability", f"{prob*100:.1f}%",
+                      "minor input · 10% weight", delta_color="off")
+            st.caption(
+                "The **composite risk score** sets the alert level "
+                "(CRITICAL > 85 · HIGH ≥ 70 · MEDIUM ≥ 50). It blends the ML fraud "
+                "probability (weighted only 10%) with FATF rule signals — KYC risk "
+                "tier, merchant category and jurisdiction risk. On adapted bank-wire "
+                "features the ML probability stays low by design, so a small % "
+                "alongside a high composite score is expected."
             )
+
             fig_g = go.Figure(go.Indicator(
                 mode="gauge+number",
-                value=prob*100,
-                number={"suffix":"%","font":{"color":color,"size":32}},
+                value=score_val,
+                title={"text":"Composite Risk Score (0–100)",
+                       "font":{"size":13,"color":"#9ca3af"}},
+                number={"font":{"color":color,"size":32}},
                 gauge={
                     "axis":{"range":[0,100]},
                     "bar":{"color":color},
@@ -139,11 +163,12 @@ with tab_detail:
                         {"range":[70,85],"color":"#3d2020"},
                         {"range":[85,100],"color":"#4d1010"},
                     ],
+                    "threshold":{"line":{"color":"white","width":3},"value":score_val},
                 },
             ))
-            fig_g.update_layout(height=220,
+            fig_g.update_layout(height=240,
                 template="plotly_dark",plot_bgcolor="#0f1117",paper_bgcolor="#0f1117",
-                margin=dict(t=10,b=10,l=10,r=10))
+                margin=dict(t=40,b=10,l=10,r=10))
             st.plotly_chart(fig_g, use_container_width=True)
 
             for k,v in {

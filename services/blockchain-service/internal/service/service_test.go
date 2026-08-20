@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -15,12 +16,17 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockGateway struct {
-	invokeFn func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error)
-	queryFn  func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error)
+	invokeFn          func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error)
+	invokeTransientFn func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error)
+	queryFn           func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error)
 }
 
 func (m *mockGateway) Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
 	return m.invokeFn(ctx, channelName, chaincodeName, function, args)
+}
+
+func (m *mockGateway) InvokeWithTransient(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error) {
+	return m.invokeTransientFn(ctx, channelName, chaincodeName, function, args, transient, endorsingOrgs)
 }
 
 func (m *mockGateway) Query(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
@@ -39,13 +45,22 @@ func (m *mockGateway) Close() {}
 
 func testConfig() appconfig.Config {
 	return appconfig.Config{
-		KYCChannel:     "kyc-channel",
-		AlertChannel:   "alert-channel",
-		AuditChannel:   "audit-channel",
-		KYCChaincode:   "kyc-contract",
-		AlertChaincode: "alert-contract",
-		AuditChaincode: "audit-contract",
+		MSPID:            "Org1MSP",
+		KYCChannel:       "kyc-channel",
+		AlertChannel:     "alert-channel",
+		AuditChannel:     "audit-channel",
+		KYCChaincode:     "kyc-contract",
+		AlertChaincode:   "alert-contract",
+		AuditChaincode:   "audit-contract",
+		CustomerHMACKey:  "test-hmac-key",
+		AuditPrivateOrgs: []string{"Org1MSP", "Org2MSP"},
 	}
+}
+
+// testPseudonym computes the pseudonym the service is expected to anchor for a
+// customer ID under the test HMAC key.
+func testPseudonym(customerID string) string {
+	return PseudonymizeCustomerID("test-hmac-key", customerID)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +183,9 @@ func TestCreateAlert(t *testing.T) {
 			require.Equal(t, "CreateAlert", function)
 			require.Len(t, args, 6)
 			require.Equal(t, "alert-1", string(args[0]))
+			// The raw customer ID must never reach the shared alert-channel.
+			require.Equal(t, testPseudonym("customer-1"), string(args[1]))
+			require.NotContains(t, string(args[1]), "customer-1")
 			return "tx-3", []byte(`{"alertID":"alert-1","status":"OPEN"}`), nil
 		},
 	})
@@ -212,7 +230,8 @@ func TestGetAlertsByCustomer(t *testing.T) {
 	svc := New(testConfig(), &mockGateway{
 		queryFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
 			require.Equal(t, "GetAlertsByCustomer", function)
-			require.Equal(t, "customer-1", string(args[0]))
+			// Lookups must translate the real customer ID to the anchored pseudonym.
+			require.Equal(t, testPseudonym("customer-1"), string(args[0]))
 			return []byte(`[{"alertID":"alert-1"}]`), nil
 		},
 	})
@@ -309,22 +328,41 @@ func TestRecordModelPrediction(t *testing.T) {
 
 func TestRecordTransactionReceipt(t *testing.T) {
 	svc := New(testConfig(), &mockGateway{
-		invokeFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
+		invokeTransientFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error) {
 			require.Equal(t, "audit-channel", channelName)
 			require.Equal(t, "audit-contract", chaincodeName)
 			require.Equal(t, "RecordTransactionProcessed", function)
-			require.Len(t, args, 14)
+
+			// Public args carry only fraud metadata — no customer, amount, or corridor.
+			require.Len(t, args, 9)
 			require.Equal(t, "txhash-001", string(args[0])) // recordID
 			require.Equal(t, "txhash-001", string(args[1])) // txHash
-			require.Equal(t, "customer-001", string(args[2]))
-			require.Equal(t, "15000", string(args[3]))   // amountUSD
-			require.Equal(t, "USD", string(args[4]))
-			require.Equal(t, "WIRE", string(args[5]))
-			require.Equal(t, "US", string(args[6]))
-			require.Equal(t, "0.87", string(args[8]))    // fraudProbability
-			require.Equal(t, "CRITICAL", string(args[9]))
-			require.Equal(t, "true", string(args[10]))   // alertFired
-			require.Equal(t, "alert-001", string(args[11]))
+			require.Equal(t, "2026-06-08T10:00:00Z", string(args[2]))
+			require.Equal(t, "0.87", string(args[3]))     // fraudProbability
+			require.Equal(t, "CRITICAL", string(args[4]))
+			require.Equal(t, "true", string(args[5]))     // alertFired
+			require.Equal(t, "alert-001", string(args[6]))
+			require.Equal(t, "ensemble-v1", string(args[7]))
+			require.Equal(t, "pred-abc-001", string(args[8]))
+
+			// Business details travel in the transient map, customer pseudonymized.
+			var details struct {
+				CustomerID   string  `json:"customerId"`
+				AmountUSD    float64 `json:"amountUsd"`
+				CurrencyCode string  `json:"currencyCode"`
+				Channel      string  `json:"channel"`
+				CountryCode  string  `json:"countryCode"`
+			}
+			require.NoError(t, json.Unmarshal(transient["receipt_details"], &details))
+			require.Equal(t, testPseudonym("customer-001"), details.CustomerID)
+			require.Equal(t, 15000.0, details.AmountUSD)
+			require.Equal(t, "USD", details.CurrencyCode)
+			require.Equal(t, "WIRE", details.Channel)
+			require.Equal(t, "US", details.CountryCode)
+
+			// Endorsement restricted to the private-collection members.
+			require.Equal(t, []string{"Org1MSP", "Org2MSP"}, endorsingOrgs)
+
 			return "tx-receipt-1", []byte(`{"recordID":"txhash-001","recordType":"TRANSACTION_PROCESSED"}`), nil
 		},
 	})
@@ -347,6 +385,46 @@ func TestRecordTransactionReceipt(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "tx-receipt-1", resp.TransactionID)
+}
+
+func TestRecordTransactionReceipt_RetriesSequenceConflict(t *testing.T) {
+	attempts := 0
+	svc := New(testConfig(), &mockGateway{
+		invokeTransientFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error) {
+			attempts++
+			if attempts == 1 {
+				return "", nil, fmt.Errorf("transaction tx-x committed with code 11")
+			}
+			return "tx-receipt-2", []byte(`{"recordID":"txhash-002"}`), nil
+		},
+	})
+
+	resp, err := svc.RecordTransactionReceipt(context.Background(), domain.TransactionReceiptRequest{
+		TxHash:      "txhash-002",
+		CustomerID:  "customer-001",
+		ProcessedAt: "2026-06-08T10:00:00Z",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, attempts)
+	require.Equal(t, "tx-receipt-2", resp.TransactionID)
+}
+
+func TestRecordTransactionReceipt_NoRetryOnOtherErrors(t *testing.T) {
+	attempts := 0
+	svc := New(testConfig(), &mockGateway{
+		invokeTransientFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error) {
+			attempts++
+			return "", nil, fmt.Errorf("endorse failed: peer unavailable")
+		},
+	})
+
+	_, err := svc.RecordTransactionReceipt(context.Background(), domain.TransactionReceiptRequest{
+		TxHash:      "txhash-003",
+		CustomerID:  "customer-001",
+		ProcessedAt: "2026-06-08T10:00:00Z",
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, attempts)
 }
 
 func TestRecordTransactionReceipt_MissingTxHash(t *testing.T) {
@@ -416,6 +494,65 @@ func TestGetComplianceReport_ValidationError(t *testing.T) {
 	svc := New(testConfig(), &mockGateway{})
 	_, err := svc.GetComplianceReport(context.Background(), "", "2026-04-02T00:00:00Z")
 	require.Error(t, err)
+}
+
+func TestGetAuditSequenceStatus(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{
+		queryFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
+			require.Equal(t, "audit-channel", channelName)
+			require.Equal(t, "GetSequenceStatus", function)
+			require.Nil(t, args)
+			return []byte(`[{"mspId":"Org1MSP","latestSequence":42}]`), nil
+		},
+	})
+
+	resp, err := svc.GetAuditSequenceStatus(context.Background())
+	require.NoError(t, err)
+	require.JSONEq(t, `[{"mspId":"Org1MSP","latestSequence":42}]`, string(resp.Payload))
+}
+
+func TestGetReceiptDetails(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{
+		queryFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
+			require.Equal(t, "GetReceiptDetails", function)
+			require.Equal(t, "txhash-001", string(args[0]))
+			return []byte(`{"recordID":"txhash-001","verified":true,"details":{"amountUsd":15000}}`), nil
+		},
+	})
+
+	resp, err := svc.GetReceiptDetails(context.Background(), "txhash-001")
+	require.NoError(t, err)
+	require.Contains(t, string(resp.Payload), `"verified":true`)
+}
+
+func TestGetReceiptDetails_ValidationError(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{})
+	_, err := svc.GetReceiptDetails(context.Background(), "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "record_id is required")
+}
+
+func TestGetAuditCompleteness(t *testing.T) {
+	svc := New(testConfig(), &mockGateway{
+		queryFn: func(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error) {
+			require.Equal(t, "GetSequenceStatus", function)
+			return []byte(`[{"mspId":"Org1MSP","latestSequence":40},{"mspId":"Org3MSP","latestSequence":9}]`), nil
+		},
+	})
+
+	// 40 receipts anchored, 42 transactions processed → 2 provably missing.
+	resp, err := svc.GetAuditCompleteness(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, "Org1MSP", resp.MSPID)
+	require.Equal(t, uint64(40), resp.AnchoredReceipts)
+	require.Equal(t, uint64(2), resp.MissingReceipts)
+	require.False(t, resp.Complete)
+
+	// Fully reconciled.
+	resp, err = svc.GetAuditCompleteness(context.Background(), 40)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), resp.MissingReceipts)
+	require.True(t, resp.Complete)
 }
 
 // ---------------------------------------------------------------------------

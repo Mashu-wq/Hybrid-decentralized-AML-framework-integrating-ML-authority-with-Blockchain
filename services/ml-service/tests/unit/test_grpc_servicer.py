@@ -180,16 +180,16 @@ def test_get_model_metrics_lightgbm():
     req = GetModelMetricsRequest(model_name="lightgbm", period="test")
     resp = servicer.GetModelMetrics(req, _make_context())
     assert resp.metrics.model_name == "lightgbm"
-    assert resp.metrics.auc_roc == pytest.approx(0.9649, rel=1e-3)
-    assert resp.metrics.precision == pytest.approx(0.6461, rel=1e-3)
+    assert resp.metrics.auc_roc == pytest.approx(0.9633, rel=1e-3)
+    assert resp.metrics.precision == pytest.approx(0.6708, rel=1e-3)
 
 
 def test_get_model_metrics_random_forest():
     servicer = _make_servicer()
     req = GetModelMetricsRequest(model_name="random_forest", period="test")
     resp = servicer.GetModelMetrics(req, _make_context())
-    assert resp.metrics.precision == pytest.approx(0.8834, rel=1e-3)
-    assert resp.metrics.recall == pytest.approx(0.5692, rel=1e-3)
+    assert resp.metrics.precision == pytest.approx(0.8712, rel=1e-3)
+    assert resp.metrics.recall == pytest.approx(0.5646, rel=1e-3)
 
 
 def test_get_model_metrics_ensemble_fallback():

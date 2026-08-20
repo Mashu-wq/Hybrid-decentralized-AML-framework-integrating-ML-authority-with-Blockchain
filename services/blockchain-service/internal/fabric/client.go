@@ -25,6 +25,11 @@ import (
 // peer's Gateway service; that peer performs cross-org endorsement server-side.
 type Gateway interface {
 	Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error)
+	// InvokeWithTransient submits a transaction whose transient map never enters
+	// the public transaction payload (used for Private Data Collection writes).
+	// When endorsingOrgs is non-empty, endorsement is restricted to those MSPs so
+	// the transient data is never shipped to peers outside the collection.
+	InvokeWithTransient(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error)
 	Query(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) ([]byte, error)
 	StartEventListeners(ctx context.Context) error
 	Health(ctx context.Context) map[string]string
@@ -149,9 +154,21 @@ func newSign(cfg appconfig.Config) (identity.Sign, error) {
 }
 
 func (g *gateway) Invoke(ctx context.Context, channelName, chaincodeName, function string, args [][]byte) (string, []byte, error) {
+	return g.InvokeWithTransient(ctx, channelName, chaincodeName, function, args, nil, nil)
+}
+
+func (g *gateway) InvokeWithTransient(ctx context.Context, channelName, chaincodeName, function string, args [][]byte, transient map[string][]byte, endorsingOrgs []string) (string, []byte, error) {
 	contract := g.gw.GetNetwork(channelName).GetContract(chaincodeName)
 
-	proposal, err := contract.NewProposal(function, client.WithBytesArguments(args...))
+	opts := []client.ProposalOption{client.WithBytesArguments(args...)}
+	if len(transient) > 0 {
+		opts = append(opts, client.WithTransient(transient))
+	}
+	if len(endorsingOrgs) > 0 {
+		opts = append(opts, client.WithEndorsingOrganizations(endorsingOrgs...))
+	}
+
+	proposal, err := contract.NewProposal(function, opts...)
 	if err != nil {
 		return "", nil, fmt.Errorf("create proposal %s on %s/%s: %w", function, channelName, chaincodeName, err)
 	}

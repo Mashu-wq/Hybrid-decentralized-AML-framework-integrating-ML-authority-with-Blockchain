@@ -38,6 +38,18 @@ type Config struct {
 	AlertChaincode string
 	AuditChaincode string
 
+	// CustomerHMACKey keys the HMAC-SHA256 pseudonymization applied to customer
+	// identifiers before they leave the bank's trust domain for the shared
+	// ledger (alert-channel and audit-channel writes/reads). The mapping from
+	// pseudonym back to customer is held only by the bank and disclosed to the
+	// regulator on lawful request.
+	CustomerHMACKey string
+
+	// AuditPrivateOrgs are the MSP IDs allowed to endorse (and therefore see the
+	// transient data of) private receipt-detail writes. Must match the policy in
+	// blockchain/chaincode/audit-contract/collections_config.json.
+	AuditPrivateOrgs []string
+
 	KafkaBrokers []string
 	KafkaTopic   string
 }
@@ -62,6 +74,8 @@ func Load() (Config, error) {
 		AlertChaincode:    getenv("BLOCKCHAIN_ALERT_CHAINCODE", "alert-contract"),
 		AuditChaincode:    getenv("BLOCKCHAIN_AUDIT_CHAINCODE", "audit-contract"),
 		KafkaTopic:        getenv("BLOCKCHAIN_EVENT_TOPIC", "blockchain.events"),
+		CustomerHMACKey:   getenv("BLOCKCHAIN_CUSTOMER_HMAC_KEY", "dev-insecure-customer-pseudonym-key"),
+		AuditPrivateOrgs:  splitAndTrim(getenv("BLOCKCHAIN_AUDIT_PRIVATE_ORGS", "Org1MSP,Org2MSP")),
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("KAFKA_BROKERS")); raw != "" {

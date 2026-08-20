@@ -1,11 +1,13 @@
 """
 XGBoost fraud detection model with optional Optuna hyperparameter search.
 
-Training results (Google Colab):
-  Precision  : 70.64 %
-  Recall     : 63.24 %
-  F1         : 66.74 %
-  ROC-AUC    : 95.97 %
+Training results (training report, 2026-07-07):
+  Precision  : 66.52 %
+  Recall     : 60.83 %
+  F1         : 63.55 %
+  ROC-AUC    : 95.55 %
+  MCC        : 0.6171
+  Confusion  : TN 8,986 / FP 154 / FN 197 / TP 306
 """
 from __future__ import annotations
 

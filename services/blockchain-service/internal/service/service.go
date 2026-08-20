@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	appconfig "github.com/fraud-detection/blockchain-service/internal/config"
 	"github.com/fraud-detection/blockchain-service/internal/domain"
@@ -15,10 +16,22 @@ import (
 type Service struct {
 	cfg     appconfig.Config
 	gateway fabric.Gateway
+
+	// receiptMu serializes receipt anchoring: the chaincode increments a per-org
+	// sequence counter in world state, so concurrent submissions from this org
+	// would MVCC-conflict on the counter key.
+	receiptMu sync.Mutex
 }
 
 func New(cfg appconfig.Config, gateway fabric.Gateway) *Service {
 	return &Service{cfg: cfg, gateway: gateway}
+}
+
+// pseudonym maps a raw customer identifier to the on-chain pseudonym used on the
+// alert- and audit-channels. Applied on both writes and reads so callers keep
+// using real customer IDs while the ledger only ever sees pseudonyms.
+func (s *Service) pseudonym(customerID string) string {
+	return PseudonymizeCustomerID(s.cfg.CustomerHMACKey, customerID)
 }
 
 func (s *Service) RegisterKYC(ctx context.Context, req domain.RegisterKYCRequest) (domain.TransactionResponse, error) {
@@ -63,9 +76,11 @@ func (s *Service) GetKYCRecord(ctx context.Context, customerID string) (domain.T
 }
 
 func (s *Service) CreateAlert(ctx context.Context, req domain.CreateAlertRequest) (domain.TransactionResponse, error) {
+	// The alert-channel ledger is shared with the partner bank; anchor the
+	// customer pseudonym, never the bank-internal identifier.
 	txID, payload, err := s.gateway.Invoke(ctx, s.cfg.AlertChannel, s.cfg.AlertChaincode, "CreateAlert", [][]byte{
 		[]byte(req.AlertID),
-		[]byte(req.CustomerID),
+		[]byte(s.pseudonym(req.CustomerID)),
 		[]byte(req.TxHash),
 		[]byte(strconv.FormatFloat(req.FraudProb, 'f', -1, 64)),
 		[]byte(strconv.FormatFloat(req.RiskScore, 'f', -1, 64)),
@@ -118,10 +133,33 @@ func (s *Service) RecordModelPrediction(ctx context.Context, req domain.ModelPre
 	return newTransactionResponse(txID, payload), nil
 }
 
+// receiptDetails mirrors the private payload expected by the audit-contract in
+// transient key "receipt_details". It is stored only in the
+// auditTransactionDetails Private Data Collection (issuing bank + regulator);
+// the shared ledger carries only its SHA-256 digest.
+type receiptDetails struct {
+	CustomerID   string  `json:"customerId"`
+	AmountUSD    float64 `json:"amountUsd"`
+	CurrencyCode string  `json:"currencyCode"`
+	Channel      string  `json:"channel"`
+	CountryCode  string  `json:"countryCode"`
+}
+
+// receiptMaxAttempts bounds retries of receipt anchoring on sequence-counter
+// MVCC conflicts (e.g. a receipt from another service instance of the same org
+// committing between endorsement and validation).
+const receiptMaxAttempts = 3
+
 // RecordTransactionReceipt writes a TRANSACTION_PROCESSED audit record to the
 // audit-channel for every ML-scored transaction (fraudulent and non-fraudulent).
 // This creates an immutable, tamper-evident proof that the transaction was seen
 // and scored, closing the fabrication gap in the compliance audit trail.
+//
+// The public record carries fraud metadata plus a chaincode-assigned per-org
+// sequence number (gap-free by construction — the regulator reconciles the latest
+// sequence against the bank's reported volume to prove completeness). Business
+// details (customer pseudonym, amount, corridor) travel in the transient map and
+// land only in the bank+regulator Private Data Collection.
 func (s *Service) RecordTransactionReceipt(ctx context.Context, req domain.TransactionReceiptRequest) (domain.TransactionResponse, error) {
 	if strings.TrimSpace(req.TxHash) == "" {
 		return domain.TransactionResponse{}, fmt.Errorf("tx_hash is required")
@@ -132,27 +170,57 @@ func (s *Service) RecordTransactionReceipt(ctx context.Context, req domain.Trans
 
 	recordID := req.TxHash // txHash as recordID gives natural idempotency
 
-	txID, payload, err := s.gateway.Invoke(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode,
-		"RecordTransactionProcessed", [][]byte{
-			[]byte(recordID),
-			[]byte(req.TxHash),
-			[]byte(req.CustomerID),
-			[]byte(strconv.FormatFloat(req.AmountUSD, 'f', -1, 64)),
-			[]byte(req.CurrencyCode),
-			[]byte(req.Channel),
-			[]byte(req.CountryCode),
-			[]byte(req.ProcessedAt),
-			[]byte(strconv.FormatFloat(req.FraudProbability, 'f', -1, 64)),
-			[]byte(req.RiskLevel),
-			[]byte(strconv.FormatBool(req.AlertFired)),
-			[]byte(req.AlertID),
-			[]byte(req.ModelVersion),
-			[]byte(req.PredictionID),
-		})
+	details, err := json.Marshal(receiptDetails{
+		CustomerID:   s.pseudonym(req.CustomerID),
+		AmountUSD:    req.AmountUSD,
+		CurrencyCode: req.CurrencyCode,
+		Channel:      req.Channel,
+		CountryCode:  req.CountryCode,
+	})
 	if err != nil {
-		return domain.TransactionResponse{}, err
+		return domain.TransactionResponse{}, fmt.Errorf("marshal receipt details: %w", err)
 	}
-	return newTransactionResponse(txID, payload), nil
+
+	args := [][]byte{
+		[]byte(recordID),
+		[]byte(req.TxHash),
+		[]byte(req.ProcessedAt),
+		[]byte(strconv.FormatFloat(req.FraudProbability, 'f', -1, 64)),
+		[]byte(req.RiskLevel),
+		[]byte(strconv.FormatBool(req.AlertFired)),
+		[]byte(req.AlertID),
+		[]byte(req.ModelVersion),
+		[]byte(req.PredictionID),
+	}
+	transient := map[string][]byte{"receipt_details": details}
+
+	s.receiptMu.Lock()
+	defer s.receiptMu.Unlock()
+
+	var lastErr error
+	for attempt := 1; attempt <= receiptMaxAttempts; attempt++ {
+		txID, payload, err := s.gateway.InvokeWithTransient(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode,
+			"RecordTransactionProcessed", args, transient, s.cfg.AuditPrivateOrgs)
+		if err == nil {
+			return newTransactionResponse(txID, payload), nil
+		}
+		lastErr = err
+		if !isSequenceConflict(err) {
+			return domain.TransactionResponse{}, err
+		}
+	}
+	return domain.TransactionResponse{}, fmt.Errorf("anchor receipt after %d attempts: %w", receiptMaxAttempts, lastErr)
+}
+
+// isSequenceConflict reports whether an invoke failed on a read-write conflict
+// over the per-org sequence counter (Fabric validation code 11/12), which is
+// safe to retry.
+func isSequenceConflict(err error) bool {
+	msg := strings.ToUpper(err.Error())
+	return strings.Contains(msg, "MVCC_READ_CONFLICT") ||
+		strings.Contains(msg, "PHANTOM_READ_CONFLICT") ||
+		strings.Contains(msg, "CODE 11") ||
+		strings.Contains(msg, "CODE 12")
 }
 
 // RecordSARFiled writes a SAR_FILED audit record to the audit-channel when a SAR
@@ -221,7 +289,9 @@ func (s *Service) GetAlertsByCustomer(ctx context.Context, customerID string) (d
 	if strings.TrimSpace(customerID) == "" {
 		return domain.TransactionResponse{}, fmt.Errorf("customer_id is required")
 	}
-	payload, err := s.gateway.Query(ctx, s.cfg.AlertChannel, s.cfg.AlertChaincode, "GetAlertsByCustomer", [][]byte{[]byte(customerID)})
+	// Alerts are anchored under the customer pseudonym; translate the caller's
+	// real customer ID the same way so the lookup matches.
+	payload, err := s.gateway.Query(ctx, s.cfg.AlertChannel, s.cfg.AlertChaincode, "GetAlertsByCustomer", [][]byte{[]byte(s.pseudonym(customerID))})
 	if err != nil {
 		return domain.TransactionResponse{}, err
 	}
@@ -280,6 +350,69 @@ func (s *Service) GetComplianceReport(ctx context.Context, startDate, endDate st
 		return domain.TransactionResponse{}, err
 	}
 	return newTransactionResponse("", payload), nil
+}
+
+// GetAuditSequenceStatus returns the latest TRANSACTION_PROCESSED sequence number
+// per organization — the completeness checkpoint a regulator reconciles against
+// each bank's reported transaction volume.
+func (s *Service) GetAuditSequenceStatus(ctx context.Context) (domain.TransactionResponse, error) {
+	payload, err := s.gateway.Query(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode, "GetSequenceStatus", nil)
+	if err != nil {
+		return domain.TransactionResponse{}, err
+	}
+	return newTransactionResponse("", payload), nil
+}
+
+// GetReceiptDetails returns the private half of a processing receipt (from the
+// bank+regulator Private Data Collection) together with the chaincode's integrity
+// verdict against the detailsHash anchored in the public record.
+func (s *Service) GetReceiptDetails(ctx context.Context, recordID string) (domain.TransactionResponse, error) {
+	if strings.TrimSpace(recordID) == "" {
+		return domain.TransactionResponse{}, fmt.Errorf("record_id is required")
+	}
+	payload, err := s.gateway.Query(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode, "GetReceiptDetails", [][]byte{[]byte(recordID)})
+	if err != nil {
+		return domain.TransactionResponse{}, err
+	}
+	return newTransactionResponse("", payload), nil
+}
+
+// GetAuditCompleteness reconciles this org's on-chain receipt count (the latest
+// chaincode-assigned sequence, gap-free by construction) against an independently
+// sourced expected transaction count. A shortfall is provable evidence that
+// processed transactions were never anchored.
+func (s *Service) GetAuditCompleteness(ctx context.Context, expectedCount uint64) (domain.CompletenessResponse, error) {
+	payload, err := s.gateway.Query(ctx, s.cfg.AuditChannel, s.cfg.AuditChaincode, "GetSequenceStatus", nil)
+	if err != nil {
+		return domain.CompletenessResponse{}, err
+	}
+
+	var statuses []struct {
+		MSPID          string `json:"mspId"`
+		LatestSequence uint64 `json:"latestSequence"`
+	}
+	if err := json.Unmarshal(payload, &statuses); err != nil {
+		return domain.CompletenessResponse{}, fmt.Errorf("decode sequence status: %w", err)
+	}
+
+	var anchored uint64
+	for _, status := range statuses {
+		if status.MSPID == s.cfg.MSPID {
+			anchored = status.LatestSequence
+			break
+		}
+	}
+
+	resp := domain.CompletenessResponse{
+		MSPID:            s.cfg.MSPID,
+		AnchoredReceipts: anchored,
+		ExpectedCount:    expectedCount,
+		Complete:         anchored >= expectedCount,
+	}
+	if expectedCount > anchored {
+		resp.MissingReceipts = expectedCount - anchored
+	}
+	return resp, nil
 }
 
 func (s *Service) Health(ctx context.Context) domain.HealthResponse {

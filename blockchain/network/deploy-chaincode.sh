@@ -16,6 +16,14 @@ PACKAGE_ID=""
 VERSION="${CHAINCODE_VERSION:-1.0}"
 SEQUENCE="${CHAINCODE_SEQUENCE:-1}"
 
+# Chaincodes that define Private Data Collections ship a collections_config.json
+# next to their source; approve/commit must carry it on every org.
+COLLECTIONS_ARGS=()
+if [[ -f "${CHAINCODE_PATH}/collections_config.json" ]]; then
+  COLLECTIONS_ARGS=(--collections-config "${CHAINCODE_PATH}/collections_config.json")
+  echo "Using private data collections config: ${CHAINCODE_PATH}/collections_config.json"
+fi
+
 source "${ROOT_DIR}/setOrgEnv.sh"
 
 package_chaincode() {
@@ -53,6 +61,7 @@ approve_for_org() {
     --version "${VERSION}" \
     --package-id "${PACKAGE_ID}" \
     --sequence "${SEQUENCE}" \
+    "${COLLECTIONS_ARGS[@]}" \
     --tls --cafile "${ORDERER_CA}" 2>&1) || {
     if echo "${out}" | grep -q "unchanged content"; then
       echo "Chaincode already approved for ${org}, skipping."
@@ -92,6 +101,7 @@ main() {
     --name "${CHAINCODE_NAME}" \
     --version "${VERSION}" \
     --sequence "${SEQUENCE}" \
+    "${COLLECTIONS_ARGS[@]}" \
     --tls --cafile "${ORDERER_CA}" \
     --peerAddresses peer0.org1.fraud-detection.example.com:7051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org1.fraud-detection.example.com/peers/peer0.org1.fraud-detection.example.com/tls/ca.crt" \
     --peerAddresses peer0.org2.fraud-detection.example.com:9051 --tlsRootCertFiles "${ROOT_DIR}/crypto-config/peerOrganizations/org2.fraud-detection.example.com/peers/peer0.org2.fraud-detection.example.com/tls/ca.crt" \

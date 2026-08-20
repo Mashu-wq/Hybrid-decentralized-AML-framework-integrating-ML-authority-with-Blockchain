@@ -1,10 +1,13 @@
 """
 Ensemble model — weighted average of RF + XGBoost + LightGBM predictions.
 
-Weights are set proportional to ROC-AUC from the Colab training run:
-  LightGBM  : 0.9649 → weight 0.35
-  RF        : 0.9638 → weight 0.33
-  XGBoost   : 0.9597 → weight 0.32
+Weights are set proportional to ROC-AUC from the training run of 2026-07-07
+(see COLAB_BENCHMARK in ml/evaluation/evaluator.py, the authoritative source):
+  LightGBM  : 0.9633 → weight 0.3343
+  RF        : 0.9605 → weight 0.3328
+  XGBoost   : 0.9555 → weight 0.3329
+The DEFAULT_WEIGHTS below are only a fallback; ml/artifacts/ensemble.json is
+loaded at startup and overrides them.
 
 A/B testing:
   If `challenger_model` and `ab_ratio` are set, `ab_ratio` fraction of calls

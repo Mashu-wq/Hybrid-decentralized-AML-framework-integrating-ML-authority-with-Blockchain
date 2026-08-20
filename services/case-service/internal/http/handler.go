@@ -337,6 +337,15 @@ func (h *Handler) GenerateSAR(w http.ResponseWriter, r *http.Request) {
 	if req.GeneratedBy == "" {
 		req.GeneratedBy = r.Header.Get("X-User-ID")
 	}
+	// generated_by is compliance-critical: it becomes the actorID on the
+	// on-chain SAR_FILED / SAR_GENERATED audit records. Without it the
+	// blockchain anchor is rejected downstream, and because anchoring is
+	// best-effort a SAR would otherwise be reported "generated" (200) while its
+	// hash never reaches the ledger. Reject early instead of silently dropping.
+	if req.GeneratedBy == "" {
+		writeError(w, http.StatusBadRequest, "generated_by is required (request body or X-User-ID header)")
+		return
+	}
 	s3Key, downloadURL, err := h.svc.GenerateSAR(r.Context(), caseID, req.GeneratedBy, req.Notes)
 	if err != nil {
 		writeError(w, httpCode(err), err.Error())

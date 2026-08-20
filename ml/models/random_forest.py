@@ -1,14 +1,16 @@
 """
 Random Forest fraud detection model.
 
-Training results (Google Colab):
+Training results (training report, 2026-07-07):
   Features      : 85
-  Train samples : 36,922 → 49,324 after SMOTE (1:2 ratio)
-  Test samples  : 9,642  (506 fraud = 5.25 %)
-  Precision     : 88.34 %
-  Recall        : 56.92 %
-  F1            : 69.23 %
-  ROC-AUC       : 96.38 %
+  Train samples : 36,921 → 49,318 after SMOTE (1:2 ratio)
+  Test samples  : 9,643  (503 fraud = 5.22 %)
+  Precision     : 87.12 %
+  Recall        : 56.46 %
+  F1            : 68.52 %
+  ROC-AUC       : 96.05 %
+  MCC           : 0.6890
+  Confusion     : TN 9,098 / FP 42 / FN 219 / TP 284
 """
 from __future__ import annotations
 
